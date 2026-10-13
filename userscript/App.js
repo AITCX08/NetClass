@@ -25,7 +25,7 @@
   const DEFAULTS = {
     enabled: true, autoPlay: true, mute: true, rate: 1, autoNext: true, autoQuiz: true,
     quizDelayMs: 700, antiPause: true, panel: true, report: false,
-    userRate: false, rateQiyang: 2, rateShengsheng: 2,
+    userRate: false, rateQiyang: 2, rateShengsheng: 1.5,
     reportBase: 'http://192.168.1.6:17999', probe: false
   };
   const CFG_KEY = 'netclass.cfg.v3';
@@ -240,10 +240,10 @@
     return goNext();
   }
 
-  /** 平台感知的倍速：用户手动设过优先，否则按平台默认 */
+  /** 平台感知的倍速：用户手动设过优先，否则用各站点播放器自带的最高档（shengsheng 1.5x / qiyang 2x） */
   function effRate() {
     if (CFG.userRate) return CFG.rate;
-    return PLATFORM === 'qiyang' ? (CFG.rateQiyang || 2) : (CFG.rateShengsheng || 2);
+    return PLATFORM === 'qiyang' ? (CFG.rateQiyang || 2) : (CFG.rateShengsheng || 1.5);
   }
 
   /**
