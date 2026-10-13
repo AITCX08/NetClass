@@ -283,7 +283,8 @@
    * 但也不能光等 —— xgplayer/Aliplayer 的 nostart 态需要一次点击才会去拉流，否则死锁。
    */
   function kickStart(v) {
-    if (!v || mediaReady(v) || !v.paused) return false;
+    if (!v || !CFG.enabled || state.allDone) return false;   // 已停用/已完成：绝不主动起播
+    if (mediaReady(v) || !v.paused) return false;
     const btn = document.querySelector('.xgplayer-start, .xgplayer-play, [class*="big-play"], .aliplayer-big-play, [class*="prism-big-play"]');
     if (!btn) return false;
     if (!(btn.offsetWidth || btn.offsetHeight)) return false;   // 隐藏的 start 按钮点了没用，还会触发播放器报错
@@ -339,6 +340,11 @@
             timers.push(setTimeout(() => { try { v.playbackRate = R; state.video.rateFixes++; } catch (_) { } }, 600));
           }
         });
+      }
+      // 已完成 / 已停用：不发任何起播动作，并且把仍在播的画面按停（防止站点自己又开始播）
+      if (!CFG.enabled || state.allDone) {
+        if (v && !v.paused && !v.ended) { try { v.pause(); log('已停用/已完成：按停播放'); } catch (_) { } }
+        return;
       }
       kickStart(v);
       applyPolicy(v, 'tick');
@@ -767,6 +773,10 @@
     try { localStorage.setItem(DONE_KEY, JSON.stringify({ at: state.doneAt, detail: String(detail || '').slice(0, 120) })); } catch (_) { }
     const v = pickVideo();
     if (v) { try { v.pause(); } catch (_) { } }
+    // 视频可能还没就绪，稍后再按一次（此时 kickStart 已被 allDone 拦住，不会再起播）
+    [3000, 8000, 15000].forEach(ms => timers.push(setTimeout(() => {
+      const vv = pickVideo(); if (vv && !vv.paused && !vv.ended) { try { vv.pause(); } catch (_) { } }
+    }, ms)));
     const msg = detail || '本门课程已全部处理完毕';
     log('🎉 全部完成，自动化已暂停、播放已停止');
     report('all-done', { platform: PLATFORM, url: location.href, detail: msg });
