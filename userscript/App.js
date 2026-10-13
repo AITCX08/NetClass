@@ -260,6 +260,14 @@
   function videoWatch() {
     timers.push(setInterval(() => {
       const v = pickVideo(); if (!v) return;
+      // 兜底：视频已经结束（事件错过 / 模块热加载后）也要推进
+      if (v.ended && !v.__ncEndHandled) {
+        v.__ncEndHandled = now();
+        state.video.ended++;
+        log('视频已处于结束状态 → 推进下一节');
+        report('video-ended', { url: location.href, count: state.video.ended, via: 'state' });
+        if (CFG.autoNext) timers.push(setTimeout(() => gotoNext('ended-state'), 1500));
+      }
       if (!v.__ncSeen) {
         v.__ncSeen = now(); state.video.seen++;
         log('发现视频', { dur: Math.round(v.duration || 0), src: String(v.currentSrc || '').slice(0, 60) });
@@ -309,26 +317,33 @@
   }
 
   function goNext() {
+    // 防重入：连续调用只保留最后一次
+    if (goNext.__busy && now() - goNext.__busy < 3000) { log('goNext 进行中，忽略重复调用'); return false; }
+    goNext.__busy = now();
     const texts = /下一节|下一章|下一课|下一讲|继续学习|下一个视频|下一个/;
     const cands = Array.from(document.querySelectorAll('button,a,div[class*=next],span[class*=next]'));
     for (const el of cands) {
+      if (el.closest('#netclass-panel')) continue;            // 绝不点自己的面板按钮
       const t = (el.innerText || el.textContent || '').trim();
       if (!t || t.length > 20) continue;
-      if (texts.test(t) && !/下一题|下一页/.test(t)) {
-        log('点击下一节 ->', t); state.next.clicks++; el.click(); return true;
+      if (texts.test(t) && !/下一题|下一页/.test(t) && !el.disabled) {
+        log('点击站点「下一节」按钮 ->', t); state.next.clicks++; el.click(); return true;
       }
     }
     const items = catalogItems();
     if (!items.length) { state.next.misses++; warn('未找到目录项'); report('next-miss', { url: location.href }); return false; }
     const status = el => (el.querySelector('.lesson-status-container') || el).innerText || '';
     const isDone = el => /已完成/.test(status(el));
-    let curIdx = items.findIndex(el => /active|current|playing|selected/.test(el.className) || /已观看\s*\d/.test(status(el)));
-    if (curIdx < 0) curIdx = -1;
+    // 当前课次识别：站点用 .active-lesson；退而求其次看文案/上次记录
+    let curIdx = items.findIndex(el => /active-lesson|current-lesson/.test(el.className));
+    if (curIdx < 0) curIdx = items.findIndex(el => /观看中/.test(status(el)));
+    if (curIdx < 0 && goNext.__lastIdx != null && goNext.__lastIdx < items.length) curIdx = goNext.__lastIdx;
+    if (curIdx >= 0) { goNext.__lastIdx = curIdx; state.currentLesson = (items[curIdx].innerText || '').replace(/\s+/g, ' ').slice(0, 40); }
     for (let i = curIdx + 1; i < items.length; i++) {
       if (!isDone(items[i])) { log('下一节 ->', (items[i].innerText || '').replace(/\s+/g, ' ').slice(0, 40)); state.next.clicks++; items[i].click(); return true; }
     }
     for (let i = 0; i < items.length; i++) {
-      if (!isDone(items[i])) { log('回到首个未完成 ->', (items[i].innerText || '').replace(/\s+/g, ' ').slice(0, 40)); state.next.clicks++; items[i].click(); return true; }
+      if (!isDone(items[i]) && i !== curIdx) { log('回到首个未完成 ->', (items[i].innerText || '').replace(/\s+/g, ' ').slice(0, 40)); state.next.clicks++; items[i].click(); return true; }
     }
     state.next.misses++; warn('目录里没有未完成项'); report('next-none', { url: location.href });
     return false;
@@ -343,6 +358,15 @@
 
   const ADAPTER_SHENGSHENG = {
     id: 'shengsheng',
+    /** 最近一次提交（DOM 分支也要登记，否则拿不到平台判定） */
+    lastSubmit: null,
+    registerSubmit(q, answer) {
+      const rec = { q, answer, at: now(), id: (q && q.id) || null };
+      this.lastSubmit = rec;
+      pendingQuiz.push(rec);
+      if (pendingQuiz.length > 10) pendingQuiz.shift();
+      return rec;
+    },
     /** 课程页自动进入第一个未完成课时（只在没有视频时才做） */
     async autoEnterLesson() {
       if (pickVideo()) return false;
@@ -417,8 +441,12 @@
       if (!clicked) { warn('选项未命中，放弃本次', g.answer); return; }
       await sleep(CFG.quizDelayMs);
       const sub = Array.from(box.querySelectorAll('button,[class*="btn"]')).find(b => /提交|确定|确认|保存/.test(b.innerText || ''));
-      if (sub) { sub.click(); state.quiz.answered++; log('已作答并提交', { pick: g.answer, why: g.why, conf: g.conf }); }
-      else warn('未找到提交按钮');
+      if (sub) {
+        this.registerSubmit(q, g.answer);          // 登记，等平台判定回来
+        sub.click();
+        state.quiz.answered++;
+        log('已作答并提交', { pick: g.answer, why: g.why, conf: g.conf });
+      } else warn('未找到提交按钮');
     }
   };
 
