@@ -126,12 +126,21 @@ async function ensure(reason) {
   }
   if (!code) { log('no code available'); return; }
   self.__lastCode = code;
+
+  // 内容没变就不要再 register：反复注册会让 Chrome 在每个匹配文档里重跑脚本，
+  // 页面里的模块被反复重置（内存状态、弹题处理全丢），日志也会被刷满。
+  const sig = hashCode(code) + ':' + source;
+  const force = reason === 'installed' || reason === 'startup' || reason === 'boot' || reason === 'manual';
   try {
-    const prev = await chrome.storage.local.get(['lastAt', 'lastSource', 'lastLen']);
-    if (prev.lastSource === source && prev.lastLen === code.length && reason === 'alarm') {
-      // 长度一样且是定时检查：仍做一次 register 以保证注册存在
+    const prev = await chrome.storage.local.get(['lastSig']);
+    if (!force && prev.lastSig === sig) {
+      return;                       // 一模一样，什么都不用做
     }
+  } catch (_) { }
+
+  try {
     await register(code, source);
+    try { await chrome.storage.local.set({ lastSig: sig }); } catch (_) { }
   } catch (e) {
     log('register failed: ' + e.message);
   }
