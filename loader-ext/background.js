@@ -23,7 +23,30 @@ const WORLD_ID = 'netclass';
 importScripts('bundled.js');
 
 function log(...a) {
+  const line = new Date().toISOString().slice(11, 19) + ' ' + a.map(x => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ');
   try { console.log('[NetClassLoader]', ...a); } catch (_) { }
+  // 落一份到 storage，SW 被回收后还能查
+  try {
+    chrome.storage.local.get(['logRing'], v => {
+      let ring = (v && v.logRing) || [];
+      ring.push(line);
+      if (ring.length > 120) ring = ring.slice(-120);
+      chrome.storage.local.set({ logRing: ring });
+    });
+  } catch (_) { }
+}
+
+/** 简单的字符串哈希，用来做「页面跑的是不是最新代码」的判据 */
+function hashCode(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(16);
+}
+
+/** 注册/注入时都带上构建标记，页面据此判断是否需要换新版 */
+function stamp(code) {
+  const id = hashCode(code);
+  return { id, code: 'window.__NETCLASS_BUILD_ID__=' + JSON.stringify(id) + ';\n' + code };
 }
 
 async function fetchRemote() {
@@ -44,6 +67,8 @@ async function register(code, source) {
     csp: "script-src 'self' 'unsafe-inline' *",
     messaging: false
   });
+  const st = stamp(code);
+  self.__lastBuildId = st.id;
   const existing = await chrome.userScripts.getScripts({ ids: [SCRIPT_ID] }).catch(() => []);
   if (existing.length) {
     await chrome.userScripts.unregister({ ids: [SCRIPT_ID] }).catch(() => { });
@@ -51,39 +76,39 @@ async function register(code, source) {
   await chrome.userScripts.register([{
     id: SCRIPT_ID,
     matches: MATCHES,
-    js: [{ code }],
+    js: [{ code: st.code }],
     runAt: 'document_start',
     allFrames: false,
     world: 'MAIN'
   }]);
-  await chrome.storage.local.set({ lastSource: source, lastAt: Date.now(), lastLen: code.length });
-  log('registered', source, code.length + 'B');
+  await chrome.storage.local.set({ lastSource: source, lastAt: Date.now(), lastLen: code.length, lastBuildId: st.id });
+  log('registered', source, code.length + 'B', 'build=' + st.id);
   await injectIntoOpenTabs(code);
 }
 
 /** 浏览器启动时页面可能先于扩展注册完成，导致脚本没注入 —— 补一次到已打开的标签页 */
 async function injectIntoOpenTabs(code) {
-  const patterns = MATCHES.map(m => m.replace('/*', '/*'));
+  const st = stamp(code);
   let tabs = [];
-  try { tabs = await chrome.tabs.query({ url: patterns }); } catch (e) { log('tabs.query failed: ' + e.message); return; }
+  try { tabs = await chrome.tabs.query({ url: MATCHES }); } catch (e) { log('tabs.query failed: ' + e.message); return; }
   for (const t of tabs) {
     if (!t.id) continue;
     try {
       const probe = await chrome.userScripts.execute({
         target: { tabId: t.id },
-        js: [{ code: 'Boolean(window.__NETCLASS_SHELL__ || window.NetClass)' }],
+        js: [{ code: 'Boolean(window.__NETCLASS_SHELL__ || window.NetClass) && window.__NETCLASS_BUILD_ID__ === ' + JSON.stringify(st.id) }],
         world: 'MAIN',
         injectImmediately: true
       }).catch(() => null);
-      const already = probe && probe[0] && probe[0].result === true;
-      if (already) { log('tab ' + t.id + ' 已有脚本，跳过补注入'); continue; }
+      const upToDate = probe && probe[0] && probe[0].result === true;
+      if (upToDate) { log('tab ' + t.id + ' 已是最新版，跳过'); continue; }
       await chrome.userScripts.execute({
         target: { tabId: t.id },
-        js: [{ code }],
+        js: [{ code: st.code }],
         world: 'MAIN',
         injectImmediately: true
       });
-      log('补注入到 tab ' + t.id + ' (' + String(t.url).slice(0, 50) + ')');
+      log('注入到 tab ' + t.id + ' (' + String(t.url).slice(0, 50) + ') build=' + st.id);
     } catch (e) {
       log('tab ' + t.id + ' 注入失败: ' + e.message);
     }
@@ -122,6 +147,7 @@ let lastNavCheck = 0;
 try {
   chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
     const url = String((tab && tab.url) || '');
+    log('onUpdated tab=' + tabId + ' status=' + info.status + ' url=' + url.slice(0, 60));
     if (!/shengshengketang\.com|bjqiyang\.com/.test(url)) return;
     if (info.status === 'loading') {
       const t = Date.now();
@@ -141,18 +167,19 @@ async function ensureThenInject(tabId, url) {
     await ensure('tab-complete');
     let code = self.__lastCode || self.NETCLASS_BUNDLED;
     if (!code) return;
+    const st = stamp(code);
     const probe = await chrome.userScripts.execute({
       target: { tabId },
-      js: [{ code: 'Boolean(window.__NETCLASS_SHELL__ || window.NetClass)' }],
+      js: [{ code: 'Boolean(window.__NETCLASS_SHELL__ || window.NetClass) && window.__NETCLASS_BUILD_ID__ === ' + JSON.stringify(st.id) }],
       world: 'MAIN', injectImmediately: true
     }).catch(() => null);
-    if (probe && probe[0] && probe[0].result === true) return;   // 已在跑
+    if (probe && probe[0] && probe[0].result === true) return;   // 已是最新版
     await chrome.userScripts.execute({
       target: { tabId },
-      js: [{ code }],
+      js: [{ code: st.code }],
       world: 'MAIN', injectImmediately: true
     });
-    log('兜底注入 tab ' + tabId + ' ' + String(url).slice(0, 50));
+    log('兜底注入 tab ' + tabId + ' ' + String(url).slice(0, 50) + ' build=' + st.id);
   } catch (e) {
     log('ensureThenInject 失败: ' + e.message);
   }

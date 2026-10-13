@@ -25,7 +25,7 @@
   const DEFAULTS = {
     enabled: true, autoPlay: true, mute: true, rate: 1, autoNext: true, autoQuiz: true,
     quizDelayMs: 700, antiPause: true, panel: true, report: false,
-    userRate: false, rateQiyang: 2, rateShengsheng: 1,
+    userRate: false, rateQiyang: 2, rateShengsheng: 2,
     reportBase: 'http://192.168.1.6:17999', probe: false
   };
   const CFG_KEY = 'netclass.cfg.v3';
@@ -243,7 +243,7 @@
   /** 平台感知的倍速：用户手动设过优先，否则按平台默认 */
   function effRate() {
     if (CFG.userRate) return CFG.rate;
-    return PLATFORM === 'qiyang' ? (CFG.rateQiyang || 2) : (CFG.rateShengsheng || 1);
+    return PLATFORM === 'qiyang' ? (CFG.rateQiyang || 2) : (CFG.rateShengsheng || 2);
   }
 
   /**
@@ -254,6 +254,23 @@
     try {
       return v.readyState >= 2 && !!v.duration && isFinite(v.duration) && v.duration > 0;
     } catch (_) { return false; }
+  }
+
+  /**
+   * 播放器处于「未开始」态时，点它自己的开始按钮把它踢起来。
+   * 不能直接 video.play()：MSE 装载期间那样做会打断起播（见 mediaReady 注释）。
+   * 但也不能光等 —— xgplayer/Aliplayer 的 nostart 态需要一次点击才会去拉流，否则死锁。
+   */
+  function kickStart(v) {
+    if (!v || mediaReady(v) || !v.paused) return false;
+    const btn = document.querySelector('.xgplayer-start, .xgplayer-play, [class*="big-play"], .aliplayer-big-play, [class*="prism-big-play"]');
+    if (!btn) return false;
+    if (!(btn.offsetWidth || btn.offsetHeight)) return false;   // 隐藏的 start 按钮点了没用，还会触发播放器报错
+    if (btn.__ncKick && now() - btn.__ncKick < 8000) return false;
+    btn.__ncKick = now();
+    try { btn.click(); } catch (_) { return false; }
+    log('点击播放器开始按钮起播');
+    return true;
   }
 
   function applyPolicy(v, why) {
@@ -302,6 +319,7 @@
           }
         });
       }
+      kickStart(v);
       applyPolicy(v, 'tick');
     }, 2000));
     try {
