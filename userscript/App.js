@@ -319,8 +319,11 @@
         state.video.ended++;
         log('视频已处于结束状态 → 推进下一节');
         report('video-ended', { url: location.href, count: state.video.ended, via: 'state' });
-        if (CFG.autoNext) timers.push(setTimeout(() => gotoNext('ended-state'), 1500));
+        if (CFG.autoNext) timers.push(setTimeout(() => advanceWhenReady('ended-state'), 1500));
       }
+      // ---- 顺序校验看护：站点弹过「请按顺序观看视频」就记下来，让跳转逻辑退避 ----
+      noteOrderBlock();
+
       // ---- 卡死看门狗 ----
       // 遇到过：视频停在 duration-1 秒，ended 事件始终不触发（播放器卡在 isLoading），
       // 结果「结束→下一节」永远等不到。这里按「时间不动」来兜底。
@@ -347,7 +350,7 @@
               v.__ncNudged = now();
               state.video.ended++;
               report('video-stall-end', { url: location.href, left: +left.toFixed(1) });
-              if (CFG.autoNext) timers.push(setTimeout(() => gotoNext('stall-end'), 800));
+              if (CFG.autoNext) timers.push(setTimeout(() => advanceWhenReady('stall-end'), 800));
             }
           } else {
             log('视频卡住 ' + Math.round(stalledMs / 1000) + 's（' + Math.round(v.currentTime) + '/' + Math.round(v.duration) + '）→ 尝试恢复播放');
@@ -367,7 +370,7 @@
         v.addEventListener('ended', () => {
           state.video.ended++; log('视频结束 #' + state.video.ended);
           report('video-ended', { url: location.href, count: state.video.ended });
-          if (CFG.autoNext) timers.push(setTimeout(() => gotoNext('ended'), 2000));
+          if (CFG.autoNext) timers.push(setTimeout(() => advanceWhenReady('ended'), 2000));
         });
         v.addEventListener('pause', () => {
           if (!CFG.autoPlay || !CFG.antiPause) return;
@@ -415,6 +418,82 @@
     return out;
   }
 
+  // ------------------------------------------------------------ 站点提示 / 顺序校验
+  /** 读站点当前的 toast 文案（「请按顺序观看视频」就是它弹的） */
+  function toastText() {
+    try {
+      const els = document.querySelectorAll('.van-toast__text, .van-toast, [class*=toast__text]');
+      for (const e of els) {
+        const t = (e.innerText || '').trim();
+        if (t) return t;
+      }
+    } catch (_) { }
+    return '';
+  }
+  /** 站点最近是否用「请按顺序观看视频」拦过我们 */
+  let orderBlockAt = 0;
+  function noteOrderBlock() {
+    if (/按顺序/.test(toastText())) {
+      if (now() - orderBlockAt > 5000) warn('站点提示：请按顺序观看视频 —— 说明上一课还没被站点确认完成，退避等待');
+      orderBlockAt = now();
+      report('order-block', { url: location.href, lesson: state.currentLesson });
+      return true;
+    }
+    return false;
+  }
+
+  /** 当前课时在目录里的下标 */
+  function currentIdx(items) {
+    let i = items.findIndex(el => /active-lesson|current-lesson/.test(el.className));
+    if (i < 0) i = items.findIndex(el => /观看中/.test((el.querySelector('.lesson-status-container') || el).innerText || ''));
+    if (i < 0 && goNext.__lastIdx != null && goNext.__lastIdx < items.length) i = goNext.__lastIdx;
+    return i;
+  }
+  const lessonDone = el => /已完成/.test(((el.querySelector('.lesson-status-container') || el).innerText || ''));
+
+  /**
+   * 等站点把「当前课时」标记为已完成。
+   * 站点是先收到完播上报、再刷新目录状态的，中间有几秒延迟；
+   * 抢在这之前点下一课，站点就会弹「请按顺序观看视频」——所以要等，不要抢。
+   */
+  async function waitLessonDone(maxMs) {
+    const deadline = now() + (maxMs || 90000);
+    while (now() < deadline) {
+      noteOrderBlock();
+      const items = catalogItems();
+      if (!items.length) { await sleep(1200); continue; }
+      const i = currentIdx(items);
+      if (i < 0) return true;                       // 认不出当前课，不阻塞
+      if (lessonDone(items[i])) return true;
+      await sleep(1500);
+    }
+    return false;
+  }
+
+  /** 自动推进：先等站点确认完成，再跳 —— 顺序合法，不会被拦 */
+  async function advanceWhenReady(reason) {
+    if (!CFG.autoNext) return false;
+    // 站点刚拦过：多等一会儿再试，别硬撞
+    if (now() - orderBlockAt < 12000) {
+      await sleep(Math.max(0, 12000 - (now() - orderBlockAt)));
+    }
+    const ok = await waitLessonDone(90000);
+    if (!ok) {
+      warn('等待站点确认完成超时（' + (reason || '') + '）——本轮不跳，稍后由 tick 重试');
+      report('advance-timeout', { url: location.href, lesson: state.currentLesson });
+      return false;
+    }
+    log('站点已确认本课完成 → 跳下一节（' + (reason || '') + '）');
+    const moved = goNext();
+    if (!moved) {
+      // 跳不动了：如果确实没有未完成项，才算真刷完
+      const its = catalogItems();
+      const left = its.filter(el => !lessonDone(el)).length;
+      if (its.length && !left) markAllDone('课时目录里已没有未完成项（共 ' + its.length + ' 课）');
+    }
+    return moved;
+  }
+
   function goNext() {
     // 防重入：连续调用只保留最后一次
     if (goNext.__busy && now() - goNext.__busy < 3000) { log('goNext 进行中，忽略重复调用'); return false; }
@@ -431,21 +510,25 @@
     }
     const items = catalogItems();
     if (!items.length) { state.next.misses++; warn('未找到目录项'); report('next-miss', { url: location.href }); return false; }
-    const status = el => (el.querySelector('.lesson-status-container') || el).innerText || '';
-    const isDone = el => /已完成/.test(status(el));
-    // 当前课次识别：站点用 .active-lesson；退而求其次看文案/上次记录
-    let curIdx = items.findIndex(el => /active-lesson|current-lesson/.test(el.className));
-    if (curIdx < 0) curIdx = items.findIndex(el => /观看中/.test(status(el)));
-    if (curIdx < 0 && goNext.__lastIdx != null && goNext.__lastIdx < items.length) curIdx = goNext.__lastIdx;
+    const isDone = lessonDone;
+    const curIdx = currentIdx(items);
     if (curIdx >= 0) { goNext.__lastIdx = curIdx; state.currentLesson = (items[curIdx].innerText || '').replace(/\s+/g, ' ').slice(0, 40); }
+
+    // 硬校验：当前课时没被站点标为「已完成」，绝不允许往后跳 —— 否则站点就弹「请按顺序观看视频」
+    if (curIdx >= 0 && !isDone(items[curIdx])) {
+      const st = ((items[curIdx].querySelector('.lesson-status-container') || items[curIdx]).innerText || '').replace(/\s+/g, ' ').slice(0, 30);
+      warn('当前课时尚未被站点确认完成（' + st + '）→ 不跳转，等它完成');
+      state.next.misses++;
+      return false;
+    }
+
     for (let i = curIdx + 1; i < items.length; i++) {
       if (!isDone(items[i])) { log('下一节 ->', (items[i].innerText || '').replace(/\s+/g, ' ').slice(0, 40)); state.next.clicks++; items[i].click(); return true; }
     }
-    for (let i = 0; i < items.length; i++) {
-      if (!isDone(items[i]) && i !== curIdx) { log('回到首个未完成 ->', (items[i].innerText || '').replace(/\s+/g, ' ').slice(0, 40)); state.next.clicks++; items[i].click(); return true; }
-    }
-    state.next.misses++; warn('目录里没有未完成项'); report('next-none', { url: location.href });
-    markAllDone('课时目录里已没有未完成项');
+    // 注意：这里故意不做「绕回列表开头」的兜底。
+    // 往回跳到某个未完成的课会直接违反站点的顺序校验（就是弹窗的来源）。
+    state.next.misses++; warn('当前课之后没有未完成项');
+    report('next-none', { url: location.href, curIdx: curIdx, total: items.length });
     return false;
   }
 
@@ -470,6 +553,8 @@
     /** 课程页自动进入第一个未完成课时（只在没有视频时才做；点了没出播放器会重试） */
     async autoEnterLesson() {
       if (pickVideo()) { this.__ssEntered = null; this.__ssTries = 0; return false; }
+      // 站点刚用「请按顺序观看视频」拦过：退避一会儿，别继续撞（越撞越乱）
+      if (now() - orderBlockAt < 15000) return false;
       const now2 = now();
       if (this.__ssEntered && now2 - this.__ssEntered < 12000) return false;   // 刚点过，给它 12 秒出播放器
       this.__ssTries = (this.__ssTries || 0) + 1;
