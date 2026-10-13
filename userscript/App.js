@@ -435,13 +435,22 @@
     },
     async poll() {
       if (!CFG.enabled) return;
-      // 0) 课程页：没有视频就先进一个未完成课时
+
+      // 1) 弹题优先：随堂题弹窗会挡住播放器，必须先答掉，不能再去做别的动作
+      const box = CFG.autoQuiz ? this.box() : null;
+      if (box) {
+        await this.answerQuiz(box).catch(err);
+        return;
+      }
+
+      // 2) 没有视频 → 进入未完成课时（重试逻辑内部自带节流）
       if (!pickVideo()) {
         await this.autoEnterLesson().catch(() => { });
         if (!pickVideo()) return;
       }
-      if (!CFG.autoQuiz) return;
-      const box = this.box(); if (!box) return;
+    },
+    /** 处理随堂弹题（从 poll 里拆出来，保证弹题期间不做其它动作） */
+    async answerQuiz(box) {
       if (box.__ncAt && now() - box.__ncAt < 4000) return;
       box.__ncAt = now(); state.quiz.seen++;
 

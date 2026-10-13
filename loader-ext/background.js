@@ -100,6 +100,7 @@ async function ensure(reason) {
     code = self.NETCLASS_BUNDLED; source = 'bundled';
   }
   if (!code) { log('no code available'); return; }
+  self.__lastCode = code;
   try {
     const prev = await chrome.storage.local.get(['lastAt', 'lastSource', 'lastLen']);
     if (prev.lastSource === source && prev.lastLen === code.length && reason === 'alarm') {
@@ -113,11 +114,65 @@ async function ensure(reason) {
 
 chrome.runtime.onInstalled.addListener(() => ensure('installed'));
 chrome.runtime.onStartup.addListener(() => ensure('startup'));
-chrome.alarms.create('netclass-refresh', { periodInMinutes: 2 });
+chrome.alarms.create('netclass-refresh', { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener(a => { if (a.name === 'netclass-refresh') ensure('alarm'); });
 
-// 立即执行一次
+// MV3 的 SW 会被回收，光靠 alarm 不够 —— 每次目标站点导航时都检查一次更新
+let lastNavCheck = 0;
+try {
+  chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+    const url = String((tab && tab.url) || '');
+    if (!/shengshengketang\.com|bjqiyang\.com/.test(url)) return;
+    if (info.status === 'loading') {
+      const t = Date.now();
+      if (t - lastNavCheck < 5000) return;      // 去抖
+      lastNavCheck = t;
+      ensure('navigate');
+    } else if (info.status === 'complete') {
+      // 兜底：页面可能比扩展先加载完，检查一次，没有脚本就补注入
+      ensureThenInject(tabId, url);
+    }
+  });
+} catch (e) { log('tabs.onUpdated hook failed: ' + e.message); }
+
+/** 页面加载完成后：确保脚本已注册，并检查该页是否真的跑起来了，没跑就补注入 */
+async function ensureThenInject(tabId, url) {
+  try {
+    await ensure('tab-complete');
+    let code = self.__lastCode || self.NETCLASS_BUNDLED;
+    if (!code) return;
+    const probe = await chrome.userScripts.execute({
+      target: { tabId },
+      js: [{ code: 'Boolean(window.__NETCLASS_SHELL__ || window.NetClass)' }],
+      world: 'MAIN', injectImmediately: true
+    }).catch(() => null);
+    if (probe && probe[0] && probe[0].result === true) return;   // 已在跑
+    await chrome.userScripts.execute({
+      target: { tabId },
+      js: [{ code }],
+      world: 'MAIN', injectImmediately: true
+    });
+    log('兜底注入 tab ' + tabId + ' ' + String(url).slice(0, 50));
+  } catch (e) {
+    log('ensureThenInject 失败: ' + e.message);
+  }
+}
+
+// 立即执行一次；启动时浏览器往往先把目标页打开完了，onUpdated 不会再触发，
+// 所以再安排两次延时补注入兜底
 ensure('boot');
+[12000, 40000, 90000].forEach(ms => setTimeout(() => ensureThenInjectAll(), ms));
+
+async function ensureThenInjectAll() {
+  try {
+    await ensure('delayed');
+    let tabs = [];
+    try { tabs = await chrome.tabs.query({ url: MATCHES }); } catch { return; }
+    for (const t of tabs) {
+      if (t.id) await ensureThenInject(t.id, t.url);
+    }
+  } catch (e) { log('ensureThenInjectAll 失败: ' + e.message); }
+}
 
 // 外部可触发（调试用）
 chrome.runtime.onMessage.addListener((msg, s, reply) => {
