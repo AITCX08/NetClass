@@ -321,6 +321,46 @@
         report('video-ended', { url: location.href, count: state.video.ended, via: 'state' });
         if (CFG.autoNext) timers.push(setTimeout(() => gotoNext('ended-state'), 1500));
       }
+      // ---- 卡死看门狗 ----
+      // 遇到过：视频停在 duration-1 秒，ended 事件始终不触发（播放器卡在 isLoading），
+      // 结果「结束→下一节」永远等不到。这里按「时间不动」来兜底。
+      if (!v.paused && mediaReady(v)) {
+        const moved = v.__ncLastT === undefined || Math.abs(v.currentTime - v.__ncLastT) > 0.25;
+        if (moved) { v.__ncLastT = v.currentTime; v.__ncStallAt = 0; }
+        else if (!v.__ncStallAt) v.__ncStallAt = now();
+        const stalledMs = v.__ncStallAt ? now() - v.__ncStallAt : 0;
+        if (stalledMs > 12000 && now() - (v.__ncStallFix || 0) > 12000) {
+          v.__ncStallFix = now();
+          const left = isFinite(v.duration) ? v.duration - v.currentTime : 999;
+          if (left < 5) {
+            // 关键：不能直接跳下一课 —— 站点会拦（视频差一点没播完，它自己那套「完播上报」
+            // 没触发，就判定本课未完成，于是「请按顺序观看视频」不放行）。
+            // 正确做法：先把它推到真正的结尾，让站点自己上报完播。
+            if (!v.__ncNudged) {
+              v.__ncNudged = now();
+              log('视频卡在结尾（还差 ' + left.toFixed(1) + 's）→ 推到真正的结尾，触发站点完播上报');
+              try { v.currentTime = Math.max(0, (v.duration || 0) - 0.04); v.play(); } catch (_) { }
+              report('video-nudge-end', { url: location.href, left: +left.toFixed(1) });
+            } else if (now() - v.__ncNudged > 12000) {
+              // 推了 12 秒还没完播，才走我们自己的推进（兜底）
+              log('推到结尾后仍未完播 → 自行推进下一节');
+              v.__ncNudged = now();
+              state.video.ended++;
+              report('video-stall-end', { url: location.href, left: +left.toFixed(1) });
+              if (CFG.autoNext) timers.push(setTimeout(() => gotoNext('stall-end'), 800));
+            }
+          } else {
+            log('视频卡住 ' + Math.round(stalledMs / 1000) + 's（' + Math.round(v.currentTime) + '/' + Math.round(v.duration) + '）→ 尝试恢复播放');
+            report('video-stall', { url: location.href, at: Math.round(v.currentTime) });
+            try { v.play(); } catch (_) { }
+            // 严重卡顿：退一档倍速再试（高倍速下 MSE 容易追不上）
+            if (stalledMs > 30000 && v.playbackRate > 1.5) {
+              try { v.playbackRate = 1.5; log('降到 1.5x 尝试缓冲'); } catch (_) { }
+            }
+          }
+        }
+      } else { v.__ncStallAt = 0; v.__ncLastT = v.currentTime; }
+
       if (!v.__ncSeen) {
         v.__ncSeen = now(); state.video.seen++;
         log('发现视频', { dur: Math.round(v.duration || 0), src: String(v.currentSrc || '').slice(0, 60) });
