@@ -93,11 +93,37 @@
     } catch (_) { }
   }
 
+  /** 页面自身请求的头部快照（用于复现鉴权；按 URL 片段归类） */
+  const reqHeaders = [];   // [{ at, url, headers }]
+  function recordHeaders(url, headers) {
+    try {
+      const u = String(url).slice(0, 200);
+      const h = {};
+      for (const k of Object.keys(headers || {})) {
+        const v = String(headers[k]);
+        // 只保留前 12 字符，够判断字段名与格式，不当全文留存
+        h[k] = v.length > 12 ? v.slice(0, 12) + '…(' + v.length + ')' : v;
+      }
+      reqHeaders.push({ at: now(), url: u, headers: h });
+      if (reqHeaders.length > 60) reqHeaders.shift();
+    } catch (_) { }
+  }
+
   function hookFetch() {
     const of = window.fetch;
     if (!of || of.__ncHooked) return;
     const hooked = function (input, init) {
       const url = typeof input === 'string' ? input : (input && input.url) || '';
+      try {
+        const h = {};
+        const ih = (init && init.headers) || (input && input.headers);
+        if (ih) {
+          if (typeof ih.forEach === 'function') ih.forEach((v, k) => h[k] = v);
+          else if (Array.isArray(ih)) ih.forEach(([k, v]) => h[k] = v);
+          else Object.keys(ih).forEach(k => h[k] = ih[k]);
+        }
+        if (Object.keys(h).length) recordHeaders(url, h);
+      } catch (_) { }
       const p = of.apply(this, arguments);
       p.then(res => {
         try {
@@ -122,9 +148,14 @@
   function hookXhr() {
     const OX = window.XMLHttpRequest;
     if (!OX || OX.prototype.__ncHooked) return;
-    const open = OX.prototype.open, send = OX.prototype.send;
-    OX.prototype.open = function (m, u) { this.__ncUrl = u; return open.apply(this, arguments); };
+    const open = OX.prototype.open, send = OX.prototype.send, setH = OX.prototype.setRequestHeader;
+    OX.prototype.open = function (m, u) { this.__ncUrl = u; this.__ncHeaders = {}; return open.apply(this, arguments); };
+    OX.prototype.setRequestHeader = function (k, v) {
+      try { this.__ncHeaders = this.__ncHeaders || {}; this.__ncHeaders[k] = String(v); } catch (_) { }
+      return setH.apply(this, arguments);
+    };
     OX.prototype.send = function () {
+      try { if (this.__ncUrl && this.__ncHeaders && Object.keys(this.__ncHeaders).length) recordHeaders(this.__ncUrl, this.__ncHeaders); } catch (_) { }
       this.addEventListener('load', () => {
         try {
           const u = this.__ncUrl || '';
@@ -141,7 +172,7 @@
     };
     OX.prototype.__ncHooked = true;
     cleanups.push(() => {
-      try { OX.prototype.open = open; OX.prototype.send = send; delete OX.prototype.__ncHooked; } catch (_) { }
+      try { OX.prototype.open = open; OX.prototype.send = send; OX.prototype.setRequestHeader = setH; delete OX.prototype.__ncHooked; } catch (_) { }
     });
   }
 
@@ -442,6 +473,7 @@
     vid: pickVideo, next: goNext, poll: () => P_ADAPTER && P_ADAPTER.poll(),
     rate(r) { CFG.rate = r; saveCfg(); const v = pickVideo(); if (v) v.playbackRate = r; return r; },
     apis: () => apiLog.slice(-60), feed: () => quizFeed.slice(-5), bank: () => bank,
+    headers: (kw) => kw ? reqHeaders.filter(r => r.url.includes(kw)).slice(-5) : reqHeaders.slice(-15),
     login: () => loginInfo,
     quizElements() {
       const out = [];
