@@ -46,7 +46,20 @@
   };
   window.__NETCLASS_STATE__ = state;
 
-  function err(e) { const m = String(e && e.message || e); state.errors.push({ at: now(), m }); if (state.errors.length > 20) state.errors.shift(); }
+  function err(e) {
+    const m = String(e && e.message || e);
+    // 记前两帧调用栈，便于定位（只保留文件名+行号段，够用且不刷屏）
+    let where = '';
+    try {
+      if (e && e.stack) {
+        const lines = String(e.stack).split('\n').slice(1, 4)
+          .map(s => s.trim().replace(/^at\s+/, '').slice(0, 90));
+        where = lines.join(' <- ');
+      }
+    } catch (_) { }
+    state.errors.push({ at: now(), m, where });
+    if (state.errors.length > 20) state.errors.shift();
+  }
 
   /** 已提交待平台判定的题目（等 insertUserAnswer 回包对账，答错时回填正确答案） */
   const pendingQuiz = [];
@@ -223,10 +236,18 @@
   }
 
   // ------------------------------------------------------------ 视频控制
+  /** 只认真正的媒体元素（Aliplayer 的 _video 等内部引用不是 DOM 元素，拿去调 play() 会炸） */
+  function isMediaEl(el) {
+    try {
+      return !!el && typeof el.play === 'function' && 'readyState' in el && 'currentTime' in el;
+    } catch (_) { return false; }
+  }
   function pickVideo() {
     const vs = Array.from(document.querySelectorAll('video'));
+    try {
+      if (window.aliplayer && isMediaEl(window.aliplayer._video)) return window.aliplayer._video;
+    } catch (_) { }
     if (!vs.length) return null;
-    if (window.aliplayer && window.aliplayer._video) return window.aliplayer._video;
     return vs.find(v => !v.ended && v.readyState >= 1) || vs[0];
   }
   /** 统一的「下一节」入口：交给当前平台适配器，没有就用通用实现 */
@@ -284,7 +305,7 @@
         v.playbackRate = R; state.video.rateFixes++; log('倍速→', R, why);
       }
       if (CFG.autoPlay && v.paused && !v.ended) {
-        v.play().catch(e => { state.video.resumed++; });
+        try { const pr = v.play(); if (pr && typeof pr.catch === 'function') pr.catch(() => { state.video.resumed++; }); } catch (_) { }
       }
     } catch (e) { err(e); }
   }
@@ -603,9 +624,16 @@
         warn('qiyang 找不到课程参数'); return false;
       }
       const idx = items.findIndex(x => x.id === curId);
-      const next = items.slice(idx + 1).find(x => !x.live) || items.find(x => !x.live && x.id !== curId);
-      if (next) { log('qiyang 下一章 ->', next.name); return this.goChapter(next); }
-      warn('qiyang 没有下一章（录播部分跑完）');
+      // 候选顺序：当前章节之后的 → 回到列表开头（只为了补漏，不绕圈）
+      // 用「本轮已进过」清单挡掉重复，避免「后面都已完成 → 绕回第一个已完成 → 再绕…」的死循环
+      const done = this.doneIds();
+      const ordered = idx >= 0
+        ? [...items.slice(idx + 1), ...items.slice(0, idx)]
+        : items.slice();
+      const next = ordered.find(x => !x.live && !done.includes(x.id));
+      if (next) { log('qiyang 下一章 ->', next.name, '（本轮已过 ' + done.length + '/' + items.length + '）'); return this.goChapter(next); }
+      log('qiyang 录播章节本轮已全部过一遍（' + items.length + ' 章），停止跳转');
+      report('qiyang-round-done', { url: location.href, total: items.length, visited: done.length });
       return false;
     },
     async poll() {
@@ -638,17 +666,16 @@
             });
           }
         }
-        // 倍速：走站点播放器 API（RateComponent 支持 2x）
+        // 倍速：走站点播放器 API（RateComponent 支持 2x）。
+        // 判据用 <video> 的实际值 —— Aliplayer 的 getStatus().speed 取不到，会误判成「每次都要纠正」
         const rate = this.effectiveRate();
         if (rate && p && typeof p.setSpeed === 'function') {
-          try {
-            const st = (typeof p.getStatus === 'function') ? p.getStatus() : null;
-            const cur = st && st.speed ? st.speed : null;
-            if (cur === null || Math.abs(cur - rate) > 0.01) {
-              p.setSpeed(rate); state.video.rateFixes++;
-              log('qiyang 倍速→', rate);
-            }
-          } catch (e) { err(e); }
+          const cur = v ? v.playbackRate : null;
+          if (cur == null || Math.abs(cur - rate) > 0.02) {
+            try { p.setSpeed(rate); } catch (e) { err(e); }
+            state.video.rateFixes++;
+            log('qiyang 倍速→', rate, '（原 ' + cur + '）');
+          }
         }
         if (v) applyPolicy(v, 'qiyang');
         return;
