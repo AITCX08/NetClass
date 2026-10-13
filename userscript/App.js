@@ -467,11 +467,53 @@
         if (!pickVideo()) return;
       }
     },
-    /** 处理随堂弹题（从 poll 里拆出来，保证弹题期间不做其它动作） */
+    /** 处理随堂弹题（三种状态：作答态 / 答错态 / 答对态） */
     async answerQuiz(box) {
-      if (box.__ncAt && now() - box.__ncAt < 4000) return;
-      box.__ncAt = now(); state.quiz.seen++;
+      if (box.__ncAt && now() - box.__ncAt < 2500) return;
+      box.__ncAt = now();
+      state.quiz.seen++;
 
+      const btn = re => Array.from(box.querySelectorAll('button,[class*="btn"]'))
+        .find(b => re.test((b.innerText || b.value || '').trim()));
+
+      // ---- A) 答错态：平台把正确答案告诉我们了 → 吃进题库 → 再试一次 ----
+      const wrongSec = box.querySelector('.result-section.incorrect, [class*="result-section"][class*="incorrect"]');
+      if (wrongSec) {
+        const ansEl = box.querySelector('.correct-answer-text, [class*="correct-answer-text"]');
+        const ansText = (ansEl && ansEl.innerText || '').replace(/[.\s、,，]/g, '').toUpperCase();
+        const q = this.__lastQ;
+        if (ansText && q) {
+          const letters = ansText.split('').filter(ch => /[A-H]/.test(ch));
+          const ans = letters.length ? letters.join(',') : ansText;
+          bankPut(q, ans, true); flushBank();
+          log('📝 答错，平台正确答案：', ans, '→ 已写回题库（下次直接命中）', String(q.name || '').slice(0, 30));
+        } else {
+          log('答错，但没抓到正确答案 / 无对应题目', { ansText, hasQ: !!q });
+        }
+        const retries = (this.__retry || 0) + 1;
+        this.__retry = retries;
+        if (retries <= 3) {
+          const retry = btn(/再试一次|重试|再试/);
+          if (retry) { log('点击「再试一次」（第 ' + retries + ' 次）'); retry.click(); return; }
+        }
+        const skip = btn(/跳过|关闭|继续|确定/);
+        if (skip) { log('重试 ' + retries + ' 次仍不对，点「' + (skip.innerText || '').trim() + '」放行'); skip.click(); return; }
+        warn('答错态没有可用按钮');
+        return;
+      }
+
+      // ---- B) 答对态：点掉继续按钮 ----
+      const okSec = box.querySelector('.result-section.correct, [class*="result-section"][class*="correct"]');
+      if (okSec) {
+        const go = btn(/继续|确定|关闭|下一|好的|知道了/);
+        log('✅ 答对，点「' + (go ? (go.innerText || '').trim() : '（无按钮）') + '」继续');
+        state.quiz.correct++;
+        this.__retry = 0; this.__lastQ = null;
+        if (go) go.click();
+        return;
+      }
+
+      // ---- C) 作答态 ----
       const itemUrl = quizFeed.filter(f => now() - f.at < 120000).pop();
       let q = null;
       if (itemUrl && itemUrl.item && itemUrl.item.question) q = itemUrl.item.question;
@@ -501,7 +543,8 @@
       await sleep(CFG.quizDelayMs);
       const sub = Array.from(box.querySelectorAll('button,[class*="btn"]')).find(b => /提交|确定|确认|保存/.test(b.innerText || ''));
       if (sub) {
-        this.registerSubmit(q, g.answer);          // 登记，等平台判定回来
+        this.__lastQ = q;                              // 记住题目，答错时用平台给的正确答案回填
+      this.registerSubmit(q, g.answer);              // 登记，等平台判定回来
         sub.click();
         state.quiz.answered++;
         log('已作答并提交', { pick: g.answer, why: g.why, conf: g.conf });
