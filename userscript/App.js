@@ -42,7 +42,7 @@
     version: VERSION, platform: PLATFORM, host: HOST, startedAt: now(), loopTicks: 0,
     video: { seen: 0, ended: 0, rateFixes: 0, resumed: 0 },
     quiz: { seen: 0, answered: 0, correct: 0, wrong: 0, bankHit: 0, bankMiss: 0 },
-    next: { clicks: 0, misses: 0 }, errors: [], route: location.href
+    next: { clicks: 0, misses: 0 }, errors: [], route: location.href, allDone: false, doneAt: null
   };
   window.__NETCLASS_STATE__ = state;
 
@@ -399,6 +399,7 @@
       if (!isDone(items[i]) && i !== curIdx) { log('回到首个未完成 ->', (items[i].innerText || '').replace(/\s+/g, ' ').slice(0, 40)); state.next.clicks++; items[i].click(); return true; }
     }
     state.next.misses++; warn('目录里没有未完成项'); report('next-none', { url: location.href });
+    markAllDone('课时目录里已没有未完成项');
     return false;
   }
 
@@ -606,6 +607,15 @@
     markDone(id) {
       try { const d = this.doneIds(); if (!d.includes(id)) { d.push(id); sessionStorage.setItem('nc.qy.done', JSON.stringify(d)); } } catch (_) { }
     },
+    /** 「本轮进过」只用于防重复跳转；「已确认完成」才是判定刷完的依据（站点的 isEnd=1） */
+    completedIds() { try { return JSON.parse(sessionStorage.getItem('nc.qy.completed') || '[]'); } catch { return []; } },
+    markCompleted(id) {
+      try { const c = this.completedIds(); if (!c.includes(id)) { c.push(id); sessionStorage.setItem('nc.qy.completed', JSON.stringify(c)); } } catch (_) { }
+    },
+    resetRound() {
+      try { sessionStorage.removeItem('nc.qy.done'); } catch (_) { }
+      log('本轮已重置，下次启动会重新逐章过一遍（已确认完成的记录保留）');
+    },
     goChapter(item) {
       if (!item) return false;
       this.markDone(item.id);
@@ -627,13 +637,37 @@
       // 候选顺序：当前章节之后的 → 回到列表开头（只为了补漏，不绕圈）
       // 用「本轮已进过」清单挡掉重复，避免「后面都已完成 → 绕回第一个已完成 → 再绕…」的死循环
       const done = this.doneIds();
+      const recorded = items.filter(x => !x.live);
       const ordered = idx >= 0
         ? [...items.slice(idx + 1), ...items.slice(0, idx)]
         : items.slice();
       const next = ordered.find(x => !x.live && !done.includes(x.id));
-      if (next) { log('qiyang 下一章 ->', next.name, '（本轮已过 ' + done.length + '/' + items.length + '）'); return this.goChapter(next); }
-      log('qiyang 录播章节本轮已全部过一遍（' + items.length + ' 章），停止跳转');
-      report('qiyang-round-done', { url: location.href, total: items.length, visited: done.length });
+      if (next) {
+        log('qiyang 下一章 ->', next.name, '（本轮已过 ' + done.length + '/' + recorded.length + ' 章录播）');
+        return this.goChapter(next);
+      }
+
+      // 本轮走完了 —— 但要按「站点确认完成」核对，不能只凭「进过」
+      const completed = this.completedIds();
+      const unfinished = recorded.filter(x => !completed.includes(x.id));
+      report('qiyang-round-done', { url: location.href, recorded: recorded.length, visited: done.length, unfinished: unfinished.length });
+
+      if (!unfinished.length) {
+        markAllDone('录播章节 ' + recorded.length + ' 章已全部确认完成');
+      } else {
+        const names = unfinished.slice(0, 6).map(x => x.name).join('；');
+        warn('本轮走完，但仍有 ' + unfinished.length + ' 章未确认完成：' + names);
+        report('qiyang-unfinished', { count: unfinished.length, names: unfinished.map(x => x.name) });
+        // 停止跳转（不宣称完成），等人处理这几章
+        CFG.enabled = false; saveCfg();
+        state.allDone = true;
+        const v = pickVideo(); if (v) { try { v.pause(); } catch (_) { } }
+        showBanner(
+          '<b>⚠️ 职业培训：还有 ' + unfinished.length + ' 章未完成</b><br>' +
+          '<span style="opacity:.9">' + names + '</span><br>' +
+          '<span style="opacity:.75;font-size:12px">多是站点侧播放异常（如视频格式不可用）。已暂停自动跳转；处理完点面板「启动」重跑</span>',
+          'warn');
+      }
       return false;
     },
     async poll() {
@@ -652,7 +686,8 @@
           log('qiyang 章节页就绪', { isEnd: vars.isEnd, current_time: vars.current_time, exper: vars.goodscourses_exper, getUrl: vars.getUrl });
           if (String(vars.isEnd) === '1') {
             log('qiyang 本章已完成，直接跳下一章');
-            this.markDone((location.href.match(/goodscourses_id=(\d+)/) || [])[1]);
+            const _cid = (location.href.match(/goodscourses_id=(\d+)/) || [])[1];
+            this.markDone(_cid); this.markCompleted(_cid);   // 站点确认 isEnd=1 —— 这才是完成依据
             timers.push(setTimeout(() => this.nextChapter(), 2000));
             return;
           }
@@ -701,6 +736,48 @@
 
   const P_ADAPTER = PLATFORM === 'shengsheng' ? ADAPTER_SHENGSHENG : PLATFORM === 'qiyang' ? ADAPTER_QIYANG : null;
 
+  // ------------------------------------------------------------ 收工：全部刷完
+  const DONE_KEY = 'netclass.done.' + PLATFORM;
+  function readDone() { try { return JSON.parse(localStorage.getItem(DONE_KEY) || 'null'); } catch (_) { return null; } }
+
+  /** 明显的横幅提示（面板之外的独立元素，不容易被忽略） */
+  let bannerEl = null;
+  function showBanner(html, tone) {
+    try {
+      if (bannerEl) bannerEl.remove();
+      bannerEl = document.createElement('div');
+      bannerEl.id = 'netclass-banner';
+      const bg = tone === 'done' ? 'linear-gradient(90deg,#0f5132,#1b7a4b)' : 'linear-gradient(90deg,#5a3a0a,#8a5a12)';
+      bannerEl.style.cssText = 'position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:2147483647;' +
+        'font:14px/1.7 "Segoe UI",system-ui,"Microsoft YaHei",sans-serif;color:#fff;background:' + bg + ';' +
+        'padding:10px 22px;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.5);max-width:88vw;text-align:center;user-select:none';
+      bannerEl.innerHTML = html;
+      (document.body || document.documentElement).appendChild(bannerEl);
+    } catch (_) { }
+  }
+  function hideBanner() { try { if (bannerEl) { bannerEl.remove(); bannerEl = null; } } catch (_) { } }
+
+  /** 检测到本门课全部完成：暂停播放 + 停掉自动化 + 持久化提示 */
+  function markAllDone(detail) {
+    if (state.allDone) return false;
+    state.allDone = true;
+    state.doneAt = now();
+    CFG.enabled = false;           // 停掉一切自动动作
+    saveCfg();
+    try { localStorage.setItem(DONE_KEY, JSON.stringify({ at: state.doneAt, detail: String(detail || '').slice(0, 120) })); } catch (_) { }
+    const v = pickVideo();
+    if (v) { try { v.pause(); } catch (_) { } }
+    const msg = detail || '本门课程已全部处理完毕';
+    log('🎉 全部完成，自动化已暂停、播放已停止');
+    report('all-done', { platform: PLATFORM, url: location.href, detail: msg });
+    showBanner(
+      '<b>✅ ' + (PLATFORM === 'qiyang' ? '职业培训' : '心理学导论') + ' 已全部完成</b><br>' +
+      '<span style="opacity:.9">' + msg + ' —— 自动化已暂停，播放已停止</span><br>' +
+      '<span style="opacity:.75;font-size:12px">如需重新扫描，点右下角面板的「启动」</span>'
+      , 'done');
+    return true;
+  }
+
   // ------------------------------------------------------------ 控制面板
   let panelEl = null;
   function mountPanel() {
@@ -712,24 +789,37 @@
       if (!panelEl) return;
       const v = pickVideo();
       const vs = v ? `${Math.floor(v.currentTime || 0)}s/${Math.floor(v.duration || 0)}s x${v.playbackRate}${v.paused ? ' ⏸' : ' ▶'}` : '无视频';
+      const BTN = 'background:#2b2b34;color:#eaeaea;border:1px solid #4d4d5a;border-radius:5px;padding:3px 9px;font:12px/1.5 inherit;display:inline-block;cursor:pointer';
+      const btn = (a, label) => `<button data-a="${a}" style="${BTN}">${label}</button>`;
       panelEl.innerHTML =
-        `<div style="font-weight:600">NetClass ${VERSION} <span style="opacity:.55">${PLATFORM}</span> <span style="opacity:.55">${CFG.enabled ? '运行' : '暂停'}</span></div>
+        `<div style="font-weight:600">NetClass ${VERSION} <span style="opacity:.55">${PLATFORM}</span> <span style="opacity:.55;color:${state.allDone ? '#6ee7a8' : 'inherit'}">${state.allDone ? '已完成' : (CFG.enabled ? '运行' : '暂停')}</span></div>
          <div style="opacity:.8">视频 ${state.video.seen} · 结束 ${state.video.ended} · 倍速修正 ${state.video.rateFixes}</div>
          <div style="opacity:.8">弹题 见${state.quiz.seen} 答${state.quiz.answered} ✔${state.quiz.correct} ✘${state.quiz.wrong} 库${Object.keys(bank).length}</div>
          <div style="opacity:.8">${vs}</div>
-         <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
-           <button data-a="toggle">${CFG.enabled ? '暂停' : '启动'}</button>
-           <button data-a="rate">倍速 ${CFG.rate}x</button>
-           <button data-a="quiz">答题</button>
-           <button data-a="next">下一节</button>
-           <button data-a="hide">收起</button>
+         <div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+           ${btn('toggle', CFG.enabled ? '暂停' : '启动')}
+           ${btn('rate', '倍速 ' + effRate() + 'x')}
+           ${btn('quiz', '答题')}
+           ${btn('next', '下一节')}
+           ${btn('hide', '收起')}
          </div>`;
       panelEl.querySelectorAll('button').forEach(b => {
+        b.onmouseenter = () => { b.style.background = '#3a3a46'; };
+        b.onmouseleave = () => { b.style.background = '#2b2b34'; };
         b.onclick = () => {
           const a = b.dataset.a;
-          if (a === 'toggle') { CFG.enabled = !CFG.enabled; saveCfg(); }
+          if (a === 'toggle') {
+            CFG.enabled = !CFG.enabled;
+            if (CFG.enabled) {          // 用户在面板重新点「启动」→ 清掉已完成标记，重新扫描
+              state.allDone = false;
+              try { localStorage.removeItem(DONE_KEY); } catch (_) { }
+              if (P_ADAPTER && P_ADAPTER.resetRound) P_ADAPTER.resetRound();
+              hideBanner();
+            }
+            saveCfg();
+          }
           if (a === 'rate') {
-            CFG.rate = CFG.rate >= 4 ? 1 : +(CFG.rate + 0.5).toFixed(1); CFG.userRate = true; saveCfg();
+            CFG.rate = effRate() >= 4 ? 1 : +(effRate() + 0.5).toFixed(1); CFG.userRate = true; saveCfg();
             const v2 = pickVideo(); if (v2) v2.playbackRate = CFG.rate;
             const p2 = P_ADAPTER && P_ADAPTER.player && P_ADAPTER.player();
             if (p2 && typeof p2.setSpeed === 'function') { try { p2.setSpeed(CFG.rate); } catch (_) { } }
@@ -759,6 +849,19 @@
     // 探测模式：把接口清单/题目结构报回本机
     if (CFG.probe) timers.push(setInterval(() => report('probe', { url: location.href, apis: apiLog.slice(-40), quiz: quizFeed.slice(-3), bank: Object.keys(bank).length }), 15000));
     report('boot', { version: VERSION, platform: PLATFORM, url: location.href });
+
+    // 本门课之前已经刷完过：直接把提示挂出来，并且不自动跑（除非用户在面板点了「启动」）
+    const prevDone = readDone();
+    if (prevDone && !CFG.enabled) {
+      state.allDone = true;
+      const when = prevDone.at ? new Date(prevDone.at).toLocaleString('zh-CN') : '';
+      const label = PLATFORM === 'qiyang' ? '职业培训' : '心理学导论';
+      showBanner(
+        '<b>✅ ' + label + ' 已完成</b><br>' +
+        '<span style="opacity:.9">' + (prevDone.detail || '') + (when ? '（' + when + '）' : '') + '</span><br>' +
+        '<span style="opacity:.75;font-size:12px">自动化保持暂停；如需重新扫描，点右下角面板的「启动」</span>',
+        'done');
+    }
   }
 
   window.NetClass = {
