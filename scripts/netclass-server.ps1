@@ -1,15 +1,13 @@
 <#
-  netclass-server.ps1 — 笔记本本机模块服务
-  用途：给油猴「壳」提供热加载的 App.js，并接收脚本回传的探测/结果数据。
-  目录约定（部署到笔记本）：
-      C:\Users\WJX\AppData\Local\TaskMesh\netclass\
-          server.ps1     本文件
-          App.js         实现模块（由 PC 侧上传）
-          logs\serve.log 访问日志
-          logs\ingest.jsonl 脚本回传数据
-  启动： powershell -NoProfile -ExecutionPolicy Bypass -File server.ps1
-  停止： Ctrl+C 或 Stop-Process（端口 17800）
-  仅监听 127.0.0.1，不对外网开放。
+  netclass-server.ps1 — 笔记本本机模块服务（给 OCS 脚本列表 + 油猴壳用）
+  用途：
+    1) /netclass.user.js  → 完整的自包含用户脚本（OCS 脚本列表里填这个 URL，启动浏览器时自动安装）
+    2) /App.js            → 实现模块（已装脚本运行时可热加载最新版，不必等下次安装）
+    3) /ingest            → 接收脚本回传的探测/结果数据
+    4) /ping, /status     → 健康检查
+  目录约定（部署到笔记本）：C:\Users\WJX\AppData\Local\TaskMesh\netclass\
+      server.ps1 / App.js / netclass.user.js / logs\
+  仅监听 127.0.0.1:17800，不对外网开放。
 #>
 param(
   [int]$Port = 17800,
@@ -20,13 +18,13 @@ $ErrorActionPreference = 'Stop'
 New-Item -ItemType Directory -Force -Path $Root, "$Root\logs" | Out-Null
 
 $appJs = Join-Path $Root 'App.js'
+$userJs = Join-Path $Root 'netclass.user.js'
 $logFile = Join-Path $Root 'logs\serve.log'
 $ingest = Join-Path $Root 'logs\ingest.jsonl'
 
 function Write-Log($msg) {
   $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg"
   Add-Content -Path $logFile -Value $line -Encoding UTF8
-  Write-Host $line
 }
 
 $listener = New-Object System.Net.HttpListener
@@ -37,44 +35,72 @@ Write-Log "listening $prefix root=$Root"
 
 while ($listener.IsListening) {
   try { $ctx = $listener.GetContext() } catch { break }
-  $req = $ctx.Request
-  $res = $ctx.Response
+  $req = $ctx.Request; $res = $ctx.Response
   $path = $req.Url.AbsolutePath
   try {
-    if ($path -eq '/ingest' -and $req.HttpMethod -eq 'POST') {
-      $sr = New-Object System.IO.StreamReader($req.InputStream, [Text.Encoding]::UTF8)
-      $body = $sr.ReadToEnd(); $sr.Close()
-      Add-Content -Path $ingest -Value $body -Encoding UTF8
-      $res.StatusCode = 200
-      $out = [Text.Encoding]::UTF8.GetBytes('{"ok":true}')
-      $res.OutputStream.Write($out, 0, $out.Length)
-      Write-Log "ingest $($body.Length)B"
-    }
-    elseif ($path -eq '/App.js' -or $path -eq '/') {
-      if (Test-Path $appJs) {
-        $bytes = [IO.File]::ReadAllBytes($appJs)
-        $res.StatusCode = 200
-        $res.ContentType = 'text/javascript; charset=utf-8'
-        $res.Headers.Add('Cache-Control', 'no-store')
-        $res.OutputStream.Write($bytes, 0, $bytes.Length)
-        Write-Log "GET $path $($bytes.Length)B"
-      } else {
-        $res.StatusCode = 404
-        $out = [Text.Encoding]::UTF8.GetBytes('App.js not found')
-        $res.OutputStream.Write($out, 0, $out.Length)
-        Write-Log "GET $path 404"
+    switch ($path) {
+      '/ingest' {
+        if ($req.HttpMethod -eq 'POST') {
+          $sr = New-Object System.IO.StreamReader($req.InputStream, [Text.Encoding]::UTF8)
+          $body = $sr.ReadToEnd(); $sr.Close()
+          Add-Content -Path $ingest -Value $body -Encoding UTF8
+          $res.StatusCode = 200
+          $out = [Text.Encoding]::UTF8.GetBytes('{"ok":true}')
+          $res.OutputStream.Write($out, 0, $out.Length)
+          Write-Log "ingest $($body.Length)B"
+        } else { $res.StatusCode = 405 }
       }
-    }
-    elseif ($path -eq '/ping') {
-      $res.StatusCode = 200
-      $res.ContentType = 'application/json'
-      $out = [Text.Encoding]::UTF8.GetBytes("{`"ok`":true,`"app`":$([bool](Test-Path $appJs)),`"at`":$([DateTimeOffset]::Now.ToUnixTimeSeconds())}")
-      $res.OutputStream.Write($out, 0, $out.Length)
-    }
-    else {
-      $res.StatusCode = 404
-      $out = [Text.Encoding]::UTF8.GetBytes('not found')
-      $res.OutputStream.Write($out, 0, $out.Length)
+      '/netclass.user.js' {
+        if (Test-Path $userJs) {
+          $bytes = [IO.File]::ReadAllBytes($userJs)
+          $res.StatusCode = 200
+          $res.ContentType = 'text/javascript; charset=utf-8'
+          $res.Headers.Add('Cache-Control', 'no-store')
+          $res.OutputStream.Write($bytes, 0, $bytes.Length)
+          Write-Log "GET user.js $($bytes.Length)B"
+        } else {
+          $res.StatusCode = 404
+          $out = [Text.Encoding]::UTF8.GetBytes('netclass.user.js not found')
+          $res.OutputStream.Write($out, 0, $out.Length)
+          Write-Log 'GET user.js 404'
+        }
+      }
+      '/App.js' {
+        if (Test-Path $appJs) {
+          $bytes = [IO.File]::ReadAllBytes($appJs)
+          $res.StatusCode = 200
+          $res.ContentType = 'text/javascript; charset=utf-8'
+          $res.Headers.Add('Cache-Control', 'no-store')
+          $res.OutputStream.Write($bytes, 0, $bytes.Length)
+          Write-Log "GET App.js $($bytes.Length)B"
+        } else {
+          $res.StatusCode = 404
+          $out = [Text.Encoding]::UTF8.GetBytes('App.js not found')
+          $res.OutputStream.Write($out, 0, $out.Length)
+          Write-Log 'GET App.js 404'
+        }
+      }
+      '/ping' {
+        $res.StatusCode = 200
+        $res.ContentType = 'application/json'
+        $json = "{`"ok`":true,`"userJs`":$([bool](Test-Path $userJs)),`"appJs`":$([bool](Test-Path $appJs)),`"at`":$([DateTimeOffset]::Now.ToUnixTimeSeconds())}"
+        $out = [Text.Encoding]::UTF8.GetBytes($json)
+        $res.OutputStream.Write($out, 0, $out.Length)
+      }
+      '/status' {
+        $res.StatusCode = 200
+        $res.ContentType = 'application/json'
+        $uSize = if (Test-Path $userJs) { (Get-Item $userJs).Length } else { 0 }
+        $aSize = if (Test-Path $appJs) { (Get-Item $appJs).Length } else { 0 }
+        $json = "{`"ok`":true,`"userJsBytes`":$uSize,`"appJsBytes`":$aSize}"
+        $out = [Text.Encoding]::UTF8.GetBytes($json)
+        $res.OutputStream.Write($out, 0, $out.Length)
+      }
+      default {
+        $res.StatusCode = 404
+        $out = [Text.Encoding]::UTF8.GetBytes('not found')
+        $res.OutputStream.Write($out, 0, $out.Length)
+      }
     }
   } catch {
     Write-Log "ERR $($_.Exception.Message)"

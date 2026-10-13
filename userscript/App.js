@@ -11,7 +11,7 @@
   // 热重载时先回收上一个实例
   try { window.NetClass && window.NetClass.dispose && window.NetClass.dispose(); } catch (_) { }
 
-  const VERSION = '0.3.0';
+  const VERSION = '0.4.0';
   const NS = '[NetClass]';
   const HOST = location.hostname;
   const PLATFORM = /shengshengketang/i.test(HOST) ? 'shengsheng'
@@ -25,6 +25,7 @@
   const DEFAULTS = {
     enabled: true, autoPlay: true, mute: true, rate: 1, autoNext: true, autoQuiz: true,
     quizDelayMs: 700, antiPause: true, panel: true, report: false,
+    userRate: false, rateQiyang: 2, rateShengsheng: 1,
     reportBase: 'http://192.168.1.6:17999', probe: false
   };
   const CFG_KEY = 'netclass.cfg.v3';
@@ -226,12 +227,30 @@
     if (window.aliplayer && window.aliplayer._video) return window.aliplayer._video;
     return vs.find(v => !v.ended && v.readyState >= 1) || vs[0];
   }
+  /** 统一的「下一节」入口：交给当前平台适配器，没有就用通用实现 */
+  function gotoNext(reason) {
+    try {
+      if (P_ADAPTER && typeof P_ADAPTER.nextChapter === 'function') {
+        log('下一节（适配器）', reason || '');
+        return P_ADAPTER.nextChapter();
+      }
+    } catch (e) { err(e); }
+    return goNext();
+  }
+
+  /** 平台感知的倍速：用户手动设过优先，否则按平台默认 */
+  function effRate() {
+    if (CFG.userRate) return CFG.rate;
+    return PLATFORM === 'qiyang' ? (CFG.rateQiyang || 2) : (CFG.rateShengsheng || 1);
+  }
+
   function applyPolicy(v, why) {
     if (!v || !CFG.enabled) return;
     try {
       if (CFG.mute && (!v.muted || v.volume !== 0)) { v.muted = true; v.volume = 0; }
-      if (CFG.rate && Math.abs((v.playbackRate || 1) - CFG.rate) > 0.01) {
-        v.playbackRate = CFG.rate; state.video.rateFixes++; log('倍速→', CFG.rate, why);
+      const R = effRate();
+      if (R && Math.abs((v.playbackRate || 1) - R) > 0.01) {
+        v.playbackRate = R; state.video.rateFixes++; log('倍速→', R, why);
       }
       if (CFG.autoPlay && v.paused && !v.ended && v.currentTime >= 0) {
         v.play().catch(e => { state.video.resumed++; });
@@ -247,7 +266,7 @@
         v.addEventListener('ended', () => {
           state.video.ended++; log('视频结束 #' + state.video.ended);
           report('video-ended', { url: location.href, count: state.video.ended });
-          if (CFG.autoNext) timers.push(setTimeout(goNext, 1800));
+          if (CFG.autoNext) timers.push(setTimeout(() => gotoNext('ended'), 2000));
         });
         v.addEventListener('pause', () => {
           if (!CFG.autoPlay || !CFG.antiPause) return;
@@ -255,8 +274,9 @@
           timers.push(setTimeout(() => { if (v.paused && !v.ended) applyPolicy(v, 'anti-pause'); }, 1200));
         });
         v.addEventListener('ratechange', () => {
-          if (CFG.rate && Math.abs((v.playbackRate || 1) - CFG.rate) > 0.01 && !v.paused) {
-            timers.push(setTimeout(() => { try { v.playbackRate = CFG.rate; state.video.rateFixes++; } catch (_) { } }, 600));
+          const R = effRate();
+          if (R && Math.abs((v.playbackRate || 1) - R) > 0.01 && !v.paused) {
+            timers.push(setTimeout(() => { try { v.playbackRate = R; state.video.rateFixes++; } catch (_) { } }, 600));
           }
         });
       }
@@ -323,6 +343,23 @@
 
   const ADAPTER_SHENGSHENG = {
     id: 'shengsheng',
+    /** 课程页自动进入第一个未完成课时（只在没有视频时才做） */
+    async autoEnterLesson() {
+      if (pickVideo()) return false;
+      if (this.__ssEntered) return false;
+      const items = catalogItems();
+      if (!items.length) return false;
+      const status = el => ((el.querySelector('.lesson-status-container') || el).innerText || '');
+      const done = el => /已完成/.test(status(el));
+      const pending = items.find(el => !done(el));
+      if (!pending) { log('shengsheng 目录里没有未完成课时'); return false; }
+      this.__ssEntered = now();
+      const name = (pending.innerText || '').replace(/\s+/g, ' ').slice(0, 40);
+      log('shengsheng 进入未完成课时:', name);
+      pending.click();
+      report('enter-lesson', { url: location.href, lesson: name });
+      return true;
+    },
     onResponse(url, body) {
       if (!/popQuiz/i.test(url)) return;
       if (/insertUserAnswer/i.test(url)) {
@@ -341,7 +378,13 @@
       return document.querySelector('.pop-quiz-dialog, [class*="pop-quiz"], [class*="popQuiz"]') || matchByText('随堂练习', 400);
     },
     async poll() {
-      if (!CFG.enabled || !CFG.autoQuiz) return;
+      if (!CFG.enabled) return;
+      // 0) 课程页：没有视频就先进一个未完成课时
+      if (!pickVideo()) {
+        await this.autoEnterLesson().catch(() => { });
+        if (!pickVideo()) return;
+      }
+      if (!CFG.autoQuiz) return;
       const box = this.box(); if (!box) return;
       if (box.__ncAt && now() - box.__ncAt < 4000) return;
       box.__ncAt = now(); state.quiz.seen++;
@@ -381,33 +424,121 @@
 
   const ADAPTER_QIYANG = {
     id: 'qiyang',
-    onResponse(url, body) { this.__last = { url, at: now(), keys: body && typeof body === 'object' ? Object.keys(body) : null }; },
-    box() {
-      for (const s of ['[class*="pop"]', '[class*="quiz"]', '[class*="question"]', '.layui-layer']) {
-        const el = document.querySelector(s);
-        if (el && /题|选项|作答|练习|正确|错误/.test(el.innerText || '') && (el.innerText || '').length < 1200) return el;
+    /** 站点 video.js 的内联变量：getUrl 是进度上报端点，isEnd 是本章完成标记 */
+    siteVars() {
+      const names = ['getUrl', 'isEnd', 'current_time', 'goodscourses_exper', 'source'];
+      const out = {};
+      for (const n of names) {
+        try { out[n] = (0, eval)(`typeof ${n} !== 'undefined' ? ${n} : null`); } catch (_) { out[n] = null; }
       }
-      return null;
+      return out;
+    },
+    player() {
+      try { return (typeof player !== 'undefined' && player) || window.player || null; } catch (_) { return window.player || null; }
+    },
+    onResponse() { },
+    box() { return null; },
+    chapterList() {
+      const out = [], seen = new Set();
+      document.querySelectorAll('.chapter-list a[href*=goodscourses_id]').forEach(a => {
+        const href = a.getAttribute('href') || '';
+        const id = (href.match(/goodscourses_id=(\d+)/) || [])[1];
+        if (!id || seen.has(id)) return;
+        seen.add(id);
+        const nm = a.querySelector('.goodscourses_name');
+        const name = ((nm ? nm.innerText : a.innerText) || '').replace(/\s+/g, ' ').trim();
+        out.push({ id, name: name.slice(0, 60), href, live: /直播/.test(name) });
+      });
+      return out;
+    },
+    doneIds() { try { return JSON.parse(sessionStorage.getItem('nc.qy.done') || '[]'); } catch { return []; } },
+    markDone(id) {
+      try { const d = this.doneIds(); if (!d.includes(id)) { d.push(id); sessionStorage.setItem('nc.qy.done', JSON.stringify(d)); } } catch (_) { }
+    },
+    goChapter(item) {
+      if (!item) return false;
+      this.markDone(item.id);
+      const url = item.href.startsWith('http') ? item.href : location.origin + item.href;
+      log('qiyang 进入章节', item.name, item.id);
+      location.href = url;
+      return true;
+    },
+    nextChapter() {
+      const m = location.href.match(/goods_id=(\d+)/);
+      const store = (location.href.match(/store_id=(\d+)/) || [, '1'])[1];
+      const items = this.chapterList();
+      const curId = (location.href.match(/goodscourses_id=(\d+)/) || [])[1];
+      if (!items.length) {
+        if (m) { log('qiyang 回课程页继续'); location.href = `${location.origin}/agent/Goods/courses?goods_id=${m[1]}&store_id=${store}`; return true; }
+        warn('qiyang 找不到课程参数'); return false;
+      }
+      const idx = items.findIndex(x => x.id === curId);
+      const next = items.slice(idx + 1).find(x => !x.live) || items.find(x => !x.live && x.id !== curId);
+      if (next) { log('qiyang 下一章 ->', next.name); return this.goChapter(next); }
+      warn('qiyang 没有下一章（录播部分跑完）');
+      return false;
     },
     async poll() {
-      if (!CFG.enabled || !CFG.autoQuiz) return;
-      const box = this.box(); if (!box) return;
-      if (box.__ncAt && now() - box.__ncAt < 4000) return;
-      box.__ncAt = now(); state.quiz.seen++;
-      const inputs = Array.from(box.querySelectorAll('input[type=radio],input[type=checkbox]'));
-      if (!inputs.length) { warn('弹层里没有可选项，交本人处理'); report('quiz-manual', { url: location.href, text: (box.innerText || '').slice(0, 200) }); return; }
-      const q = { type: inputs[0].type === 'checkbox' ? 2 : 1, name: (box.innerText || '').slice(0, 300), optionList: [] };
-      inputs.forEach((inp, i) => {
-        const lab = inp.closest('label') || (inp.parentElement && inp.parentElement.parentElement) || inp.parentElement;
-        q.optionList.push({ name: String.fromCharCode(65 + i), data: (lab ? lab.innerText : '').trim() });
-      });
-      const g = guess(q);
-      const picks = g.answer.split(',');
-      picks.forEach(p => { const i = p.charCodeAt(0) - 65; if (inputs[i] && !inputs[i].checked) inputs[i].click(); });
-      await sleep(CFG.quizDelayMs);
-      const sub = Array.from(box.querySelectorAll('button,a,input[type=submit]')).find(b => /提交|确定|确认|保存|交卷/.test(b.innerText || b.value || ''));
-      if (sub) { sub.click(); state.quiz.answered++; log('已作答（qiyang）', { pick: g.answer, why: g.why }); }
-      else warn('未找到提交按钮（qiyang）');
+      if (!CFG.enabled) return;
+      const p = this.player();
+      const v = pickVideo();
+      const hasChapterId = /goodscourses_id=/i.test(location.href);
+      const isChapter = hasChapterId && /\/agent\/Goods\/Courses/i.test(location.href);
+      const isCoursePage = !hasChapterId && /\/agent\/Goods\/courses/i.test(location.href);
+
+      if (isChapter) {
+        this.__qyList = false;   // 换到章节页，允许课程页逻辑下次再跑
+        const vars = this.siteVars();
+        if (!this.__qyInit) {
+          this.__qyInit = true;
+          log('qiyang 章节页就绪', { isEnd: vars.isEnd, current_time: vars.current_time, exper: vars.goodscourses_exper, getUrl: vars.getUrl });
+          if (String(vars.isEnd) === '1') {
+            log('qiyang 本章已完成，直接跳下一章');
+            this.markDone((location.href.match(/goodscourses_id=(\d+)/) || [])[1]);
+            timers.push(setTimeout(() => this.nextChapter(), 2000));
+            return;
+          }
+          const media = v || (p && p._video);
+          if (media) {
+            media.addEventListener('ended', () => {
+              state.video.ended++;
+              log('qiyang 本章播完 -> 下一章');
+              report('video-ended', { url: location.href, platform: 'qiyang' });
+              if (CFG.autoNext) timers.push(setTimeout(() => this.nextChapter(), 3000));
+            });
+          }
+        }
+        // 倍速：走站点播放器 API（RateComponent 支持 2x）
+        const rate = this.effectiveRate();
+        if (rate && p && typeof p.setSpeed === 'function') {
+          try {
+            const st = (typeof p.getStatus === 'function') ? p.getStatus() : null;
+            const cur = st && st.speed ? st.speed : null;
+            if (cur === null || Math.abs(cur - rate) > 0.01) {
+              p.setSpeed(rate); state.video.rateFixes++;
+              log('qiyang 倍速→', rate);
+            }
+          } catch (e) { err(e); }
+        }
+        if (v) applyPolicy(v, 'qiyang');
+        return;
+      }
+
+      // 课程页：挑未完成章节进去（按顺序，跳过直播）
+      if (isCoursePage && !this.__qyList) {
+        this.__qyList = true;
+        const items = this.chapterList().filter(x => !x.live);
+        log('qiyang 课程页：录播章节', items.length, '个');
+        const done = this.doneIds();
+        const next = items.find(x => !done.includes(x.id));
+        if (next) timers.push(setTimeout(() => this.goChapter(next), 2500));
+        else log('qiyang 录播章节本轮已全部过一遍');
+      }
+    },
+    /** 倍速：用户没手动设过就用平台默认（qiyang 站点播放器自带 2x） */
+    effectiveRate() {
+      if (CFG.userRate) return CFG.rate;
+      return CFG.rateQiyang || 2;
     }
   };
 
@@ -440,9 +571,14 @@
         b.onclick = () => {
           const a = b.dataset.a;
           if (a === 'toggle') { CFG.enabled = !CFG.enabled; saveCfg(); }
-          if (a === 'rate') { CFG.rate = CFG.rate >= 4 ? 1 : +(CFG.rate + 0.5).toFixed(1); saveCfg(); const v2 = pickVideo(); if (v2) v2.playbackRate = CFG.rate; }
+          if (a === 'rate') {
+            CFG.rate = CFG.rate >= 4 ? 1 : +(CFG.rate + 0.5).toFixed(1); CFG.userRate = true; saveCfg();
+            const v2 = pickVideo(); if (v2) v2.playbackRate = CFG.rate;
+            const p2 = P_ADAPTER && P_ADAPTER.player && P_ADAPTER.player();
+            if (p2 && typeof p2.setSpeed === 'function') { try { p2.setSpeed(CFG.rate); } catch (_) { } }
+          }
           if (a === 'quiz') { P_ADAPTER && P_ADAPTER.poll(); }
-          if (a === 'next') { goNext(); }
+          if (a === 'next') { gotoNext('panel'); }
           if (a === 'hide') { panelEl.style.display = 'none'; setTimeout(() => { if (panelEl) panelEl.style.display = ''; }, 8000); }
           draw();
         };

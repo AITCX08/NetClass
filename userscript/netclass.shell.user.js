@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NetClass 网课自动处理（壳）
 // @namespace    taskmesh.local/netclass
-// @version      0.3.0
+// @version      0.4.0
 // @description  两站网课自动处理引导壳：从本机 127.0.0.1:17800 热加载实现模块（不停机更新），并保留内嵌兜底实现。
 // @author       TaskMesh
 // @match        https://edu.shengshengketang.com/*
@@ -24,7 +24,7 @@
  * --------------------------------------------------------------------------- */
 (function () {
   'use strict';
-  const VERSION = '0.3.0';
+  const VERSION = '0.4.0';
   const BASE = 'http://127.0.0.1:17800/';
   const MODULE = 'App.js';
   const NS = '[NetClass]';
