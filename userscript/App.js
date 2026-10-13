@@ -47,6 +47,9 @@
   window.__NETCLASS_STATE__ = state;
 
   function err(e) { const m = String(e && e.message || e); state.errors.push({ at: now(), m }); if (state.errors.length > 20) state.errors.shift(); }
+
+  /** 已提交待平台判定的题目（等 insertUserAnswer 回包对账，答错时回填正确答案） */
+  const pendingQuiz = [];
   function report(kind, payload) {
     if (!CFG.report) return;
     try {
@@ -59,7 +62,6 @@
   // ------------------------------------------------------------ 网络观察层
   const quizFeed = [];
   const apiLog = [];
-  const pending = [];
   const cleanups = [];
   const timers = [];
   /** 登录态与关键接口的响应快照（只保留结构/短文本，用于适配与排障） */
@@ -402,17 +404,31 @@
     },
     onResponse(url, body) {
       if (!/popQuiz/i.test(url)) return;
-      if (/insertUserAnswer/i.test(url)) {
-        const d = body && body.data;
-        const last = pending[pending.length - 1];
-        if (!d || !last) return;
-        if (d.state === 2) { state.quiz.correct++; bankPut(last.q, last.answer, true); log('✅ 答对', last.answer); pending.pop(); flushBank(); }
-        else if (d.state === 3) {
-          state.quiz.wrong++;
-          if (d.answer) { bankPut(last.q, d.answer, true); log('❌ 答错，正确答案：', d.answer, '→ 已写入本地题库'); pending.pop(); flushBank(); timers.push(setTimeout(() => this.poll(), 1500)); }
-          else { bankPut(last.q, last.answer, false); log('❌ 答错（平台未给答案）'); }
+      if (!/insertUserAnswer/i.test(url)) return;
+      // 只对账最近一次提交（60 秒内），避免把过期回包算到新题上
+      const last = pendingQuiz.filter(r => now() - r.at < 60000).pop();
+      const d = body && body.data;
+      if (!d || !last) { if (d && d.state) log('quiz 回包无对应提交', d.state); return; }
+      if (d.state === 2) {
+        state.quiz.correct++;
+        bankPut(last.q, last.answer, true);
+        log('✅ 答对', last.answer, '→ 写入题库');
+        flushBank();
+      } else if (d.state === 3) {
+        state.quiz.wrong++;
+        if (d.answer) {
+          bankPut(last.q, d.answer, true);
+          log('❌ 答错，正确答案：', d.answer, '→ 已写入本地题库');
+        } else {
+          bankPut(last.q, last.answer, false);
+          log('❌ 答错（平台未给答案）');
         }
+        flushBank();
+      } else {
+        log('quiz 回包 state=' + d.state, JSON.stringify(d).slice(0, 120));
       }
+      const i = pendingQuiz.indexOf(last);
+      if (i >= 0) pendingQuiz.splice(i, 1);
     },
     box() {
       return document.querySelector('.pop-quiz-dialog, [class*="pop-quiz"], [class*="popQuiz"]') || matchByText('随堂练习', 400);
