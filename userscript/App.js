@@ -1,0 +1,470 @@
+/* NetClass 实现模块（由网课壳热加载）
+ * 目标站点：edu.shengshengketang.com / study.bjqiyang.com
+ * 职责：视频自动播放·静音·倍速·掉速纠正·结束自动下一节；随堂弹题自动作答；本地题库；控制面板。
+ * 约束：只做页面内的正常播放与页面自身表单作答；不伪造学时、不代考、不绕过验证码/人脸/短信。
+ * 接口（供壳热重载与外部控制端调用）：
+ *   window.NetClass = { version, platform, cfg, state, dispose(), ... }
+ */
+(function () {
+  'use strict';
+
+  // 热重载时先回收上一个实例
+  try { window.NetClass && window.NetClass.dispose && window.NetClass.dispose(); } catch (_) { }
+
+  const VERSION = '0.3.0';
+  const NS = '[NetClass]';
+  const HOST = location.hostname;
+  const PLATFORM = /shengshengketang/i.test(HOST) ? 'shengsheng'
+    : /bjqiyang/i.test(HOST) ? 'qiyang' : 'unknown';
+  const log = (...a) => console.log(NS, ...a);
+  const warn = (...a) => console.warn(NS, ...a);
+  const now = () => Date.now();
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // ------------------------------------------------------------ 配置
+  const DEFAULTS = {
+    enabled: true, autoPlay: true, mute: true, rate: 1, autoNext: true, autoQuiz: true,
+    quizDelayMs: 700, antiPause: true, panel: true, report: false,
+    reportBase: 'http://192.168.1.6:17999', probe: false
+  };
+  const CFG_KEY = 'netclass.cfg.v3';
+  const BANK_KEY = 'netclass.bank.v3';
+  const CFG = (() => {
+    try {
+      const raw = localStorage.getItem(CFG_KEY);
+      return raw ? { ...DEFAULTS, ...JSON.parse(raw) } : { ...DEFAULTS };
+    } catch { return { ...DEFAULTS }; }
+  })();
+  const saveCfg = () => { try { localStorage.setItem(CFG_KEY, JSON.stringify(CFG)); } catch (_) { } };
+
+  const state = {
+    version: VERSION, platform: PLATFORM, host: HOST, startedAt: now(), loopTicks: 0,
+    video: { seen: 0, ended: 0, rateFixes: 0, resumed: 0 },
+    quiz: { seen: 0, answered: 0, correct: 0, wrong: 0, bankHit: 0, bankMiss: 0 },
+    next: { clicks: 0, misses: 0 }, errors: [], route: location.href
+  };
+  window.__NETCLASS_STATE__ = state;
+
+  function err(e) { const m = String(e && e.message || e); state.errors.push({ at: now(), m }); if (state.errors.length > 20) state.errors.shift(); }
+  function report(kind, payload) {
+    if (!CFG.report) return;
+    try {
+      const body = JSON.stringify({ platform: PLATFORM, host: HOST, kind, at: now(), payload });
+      if (typeof GM_xmlhttpRequest === 'function') GM_xmlhttpRequest({ method: 'POST', url: CFG.reportBase + '/ingest', headers: { 'Content-Type': 'application/json' }, data: body, timeout: 5000 });
+      else fetch(CFG.reportBase + '/ingest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(() => { });
+    } catch (_) { }
+  }
+
+  // ------------------------------------------------------------ 网络观察层
+  const quizFeed = [];
+  const apiLog = [];
+  const pending = [];
+  const cleanups = [];
+  const timers = [];
+  /** 登录态与关键接口的响应快照（只保留结构/短文本，用于适配与排障） */
+  const loginInfo = { at: 0, code: null, keys: null, name: null, raw: null };
+  let lastCourseData = null;
+
+  const SHORT_KEYS = ['code', 'data', 'msg', 'content'];
+
+  function looksLikeQuiz(b) {
+    try { const s = JSON.stringify(b).slice(0, 5000); return /"optionList"|"popQuizId"|"isMustRight"|"question"\s*:\s*\{/.test(s); } catch { return false; }
+  }
+  function rememberQuiz(b, url) {
+    try {
+      const d = b && b.data;
+      const items = Array.isArray(d) ? d : (d && Array.isArray(d.list) ? d.list : (d && d.question ? [d] : []));
+      for (const it of items) if (it && it.question) { quizFeed.push({ at: now(), url: String(url).slice(0, 200), item: it }); say('捕获随堂题', it.id, (it.question.name || '').slice(0, 40)); }
+      if (quizFeed.length > 40) quizFeed.shift();
+    } catch (_) { }
+  }
+  const say = (...a) => log('quiz:', ...a);
+
+  function captureLogin(b, url) {
+    try {
+      if (!/login\/(info|autoLogin|registerUser)/.test(url)) return;
+      const d = b && b.data;
+      loginInfo.at = now();
+      loginInfo.code = b && b.code;
+      loginInfo.keys = d && typeof d === 'object' ? Object.keys(d).slice(0, 20) : null;
+      loginInfo.name = d && (d.nickName || d.nickname || d.userName || d.mobile || d.phone || null);
+      loginInfo.raw = d ? JSON.stringify(d).slice(0, 400) : null;
+      log('登录态快照', loginInfo.code, loginInfo.name || '(未登录/未返回昵称)');
+    } catch (_) { }
+  }
+
+  function hookFetch() {
+    const of = window.fetch;
+    if (!of || of.__ncHooked) return;
+    const hooked = function (input, init) {
+      const url = typeof input === 'string' ? input : (input && input.url) || '';
+      const p = of.apply(this, arguments);
+      p.then(res => {
+        try {
+          const ct = (res.headers && res.headers.get && res.headers.get('content-type')) || '';
+          if (/json/i.test(ct) && url) {
+            res.clone().json().then(b => {
+              if (apiLog.length < 400) apiLog.push({ at: now(), url: String(url).slice(0, 200), code: b && b.code, keys: b && typeof b === 'object' ? Object.keys(b).slice(0, 12) : null });
+              captureLogin(b, String(url));
+              if (looksLikeQuiz(b)) rememberQuiz(b, url);
+              P_ADAPTER && P_ADAPTER.onResponse && P_ADAPTER.onResponse(String(url), b);
+            }).catch(() => { });
+          }
+        } catch (_) { }
+        return res;
+      }).catch(e => { throw e; });
+      return p;
+    };
+    hooked.__ncHooked = true;
+    window.fetch = hooked;
+    cleanups.push(() => { if (window.fetch === hooked) window.fetch = of; });
+  }
+  function hookXhr() {
+    const OX = window.XMLHttpRequest;
+    if (!OX || OX.prototype.__ncHooked) return;
+    const open = OX.prototype.open, send = OX.prototype.send;
+    OX.prototype.open = function (m, u) { this.__ncUrl = u; return open.apply(this, arguments); };
+    OX.prototype.send = function () {
+      this.addEventListener('load', () => {
+        try {
+          const u = this.__ncUrl || '';
+          const ct = (this.getResponseHeader && this.getResponseHeader('content-type')) || '';
+          if (!/json/i.test(ct) || !u) return;
+          const b = JSON.parse(this.responseText);
+          if (apiLog.length < 400) apiLog.push({ at: now(), url: String(u).slice(0, 200), code: b && b.code, keys: b && typeof b === 'object' ? Object.keys(b).slice(0, 12) : null });
+          captureLogin(b, String(u));
+          if (looksLikeQuiz(b)) rememberQuiz(b, u);
+          P_ADAPTER && P_ADAPTER.onResponse && P_ADAPTER.onResponse(String(u), b);
+        } catch (_) { }
+      });
+      return send.apply(this, arguments);
+    };
+    OX.prototype.__ncHooked = true;
+    cleanups.push(() => {
+      try { OX.prototype.open = open; OX.prototype.send = send; delete OX.prototype.__ncHooked; } catch (_) { }
+    });
+  }
+
+  // ------------------------------------------------------------ 本地题库
+  let bank = (() => { try { const r = localStorage.getItem(BANK_KEY); return r ? JSON.parse(r) : {}; } catch { return {}; } })();
+  let bankDirty = false;
+  function normalize(s) { return String(s || '').replace(/[\s\u3000]+/g, '').replace(/[，。；：！？、,.!?;:""'']/g, '').slice(0, 200); }
+  function bankKey(q) { const n = normalize(q && q.name); return n ? 'q:' + n : ''; }
+  function bankGet(q) { const k = bankKey(q); if (!k) return null; const v = bank[k]; return v && v.answer ? v.answer : null; }
+  function bankPut(q, answer, correct) {
+    const k = bankKey(q); if (!k || !answer) return;
+    const cur = bank[k] || { name: String(q.name || '').slice(0, 200), type: q.type };
+    cur.answer = answer; cur.correct = correct !== false; cur.at = now(); cur.hits = cur.hits || 0;
+    bank[k] = cur; bankDirty = true;
+  }
+  function flushBank() { if (!bankDirty) return; try { localStorage.setItem(BANK_KEY, JSON.stringify(bank)); bankDirty = false; } catch (_) { } }
+  timers.push(setInterval(flushBank, 10000));
+
+  // ------------------------------------------------------------ 作答启发
+  function guess(q) {
+    const opts = (q && q.optionList) || [];
+    if (!opts.length) return { answer: '', why: 'no-option', conf: 0 };
+    const hit = bankGet(q);
+    if (hit) { state.quiz.bankHit++; return { answer: hit, why: 'bank', conf: 1 }; }
+    state.quiz.bankMiss++;
+
+    const texts = opts.map(o => ({ name: String(o.name || '').replace(/[.\s]/g, ''), data: String(o.data || '').trim() }));
+    if (q.type === 3) { // 判断
+      for (const t of texts) if (/^(正确|对|是|true|√|T)$/i.test(t.data)) return { answer: t.name, why: 'judge-true', conf: 0.6 };
+      return { answer: texts[0] ? texts[0].name : '', why: 'judge-first', conf: 0.3 };
+    }
+    const score = t => {
+      let s = 0;
+      if (/以上|全都|都是|均正确|都正确|全部正确|不确定/.test(t)) s += 2;
+      if (/绝对|一定|必然|只有|必须|只能|所有|从不|永远/.test(t)) s -= 1.5;
+      if (/^不是|^不能|^不对/.test(t)) s -= 1;
+      if (t.length >= 8) s += 0.5;
+      if (t.length >= 16) s += 0.5;
+      return s;
+    };
+    const ranked = texts.map(t => ({ ...t, s: score(t.data) })).sort((a, b) => b.s - a.s);
+    if (q.type === 1) return { answer: ranked[0].name, why: 'heuristic-single', conf: 0.35 };
+    const picks = ranked.filter(r => r.s > 0.5).map(r => r.name);
+    return { answer: (picks.length ? picks : [ranked[0].name]).join(','), why: 'heuristic-multi', conf: 0.25 };
+  }
+
+  // ------------------------------------------------------------ 视频控制
+  function pickVideo() {
+    const vs = Array.from(document.querySelectorAll('video'));
+    if (!vs.length) return null;
+    if (window.aliplayer && window.aliplayer._video) return window.aliplayer._video;
+    return vs.find(v => !v.ended && v.readyState >= 1) || vs[0];
+  }
+  function applyPolicy(v, why) {
+    if (!v || !CFG.enabled) return;
+    try {
+      if (CFG.mute && (!v.muted || v.volume !== 0)) { v.muted = true; v.volume = 0; }
+      if (CFG.rate && Math.abs((v.playbackRate || 1) - CFG.rate) > 0.01) {
+        v.playbackRate = CFG.rate; state.video.rateFixes++; log('倍速→', CFG.rate, why);
+      }
+      if (CFG.autoPlay && v.paused && !v.ended && v.currentTime >= 0) {
+        v.play().catch(e => { state.video.resumed++; });
+      }
+    } catch (e) { err(e); }
+  }
+  function videoWatch() {
+    timers.push(setInterval(() => {
+      const v = pickVideo(); if (!v) return;
+      if (!v.__ncSeen) {
+        v.__ncSeen = now(); state.video.seen++;
+        log('发现视频', { dur: Math.round(v.duration || 0), src: String(v.currentSrc || '').slice(0, 60) });
+        v.addEventListener('ended', () => {
+          state.video.ended++; log('视频结束 #' + state.video.ended);
+          report('video-ended', { url: location.href, count: state.video.ended });
+          if (CFG.autoNext) timers.push(setTimeout(goNext, 1800));
+        });
+        v.addEventListener('pause', () => {
+          if (!CFG.autoPlay || !CFG.antiPause) return;
+          if (v.ended || v.currentTime < 0.5) return;
+          timers.push(setTimeout(() => { if (v.paused && !v.ended) applyPolicy(v, 'anti-pause'); }, 1200));
+        });
+        v.addEventListener('ratechange', () => {
+          if (CFG.rate && Math.abs((v.playbackRate || 1) - CFG.rate) > 0.01 && !v.paused) {
+            timers.push(setTimeout(() => { try { v.playbackRate = CFG.rate; state.video.rateFixes++; } catch (_) { } }, 600));
+          }
+        });
+      }
+      applyPolicy(v, 'tick');
+    }, 2000));
+    try {
+      const mo = new MutationObserver(() => { const v = pickVideo(); if (v && !v.__ncSeen) applyPolicy(v, 'mutation'); });
+      mo.observe(document.documentElement, { childList: true, subtree: true });
+      cleanups.push(() => mo.disconnect());
+    } catch (_) { }
+  }
+
+  /** 目录项定位：优先已知结构，其次按文本特征兜底 */
+  function catalogItems() {
+    const known = Array.from(document.querySelectorAll('.lesson-item, [class*=lesson-item], [class*=tab-body] [class*=item]'))
+      .filter(el => /已完成|已观看|未开始|学习中/.test(el.innerText || ''));
+    if (known.length) return known;
+    const seen = new Set();
+    const out = [];
+    document.querySelectorAll('div,span,a,p').forEach(el => {
+      const t = (el.innerText || '').trim();
+      if (!t || t.length > 90) return;
+      if (!/已完成|已观看|未开始|学习中/.test(t)) return;
+      if (el.children.length > 3) return;
+      if (seen.has(el)) return;
+      seen.add(el);
+      out.push(el);
+    });
+    return out;
+  }
+
+  function goNext() {
+    const texts = /下一节|下一章|下一课|下一讲|继续学习|下一个视频|下一个/;
+    const cands = Array.from(document.querySelectorAll('button,a,div[class*=next],span[class*=next]'));
+    for (const el of cands) {
+      const t = (el.innerText || el.textContent || '').trim();
+      if (!t || t.length > 20) continue;
+      if (texts.test(t) && !/下一题|下一页/.test(t)) {
+        log('点击下一节 ->', t); state.next.clicks++; el.click(); return true;
+      }
+    }
+    const items = catalogItems();
+    if (!items.length) { state.next.misses++; warn('未找到目录项'); report('next-miss', { url: location.href }); return false; }
+    const status = el => (el.querySelector('.lesson-status-container') || el).innerText || '';
+    const isDone = el => /已完成/.test(status(el));
+    let curIdx = items.findIndex(el => /active|current|playing|selected/.test(el.className) || /已观看\s*\d/.test(status(el)));
+    if (curIdx < 0) curIdx = -1;
+    for (let i = curIdx + 1; i < items.length; i++) {
+      if (!isDone(items[i])) { log('下一节 ->', (items[i].innerText || '').replace(/\s+/g, ' ').slice(0, 40)); state.next.clicks++; items[i].click(); return true; }
+    }
+    for (let i = 0; i < items.length; i++) {
+      if (!isDone(items[i])) { log('回到首个未完成 ->', (items[i].innerText || '').replace(/\s+/g, ' ').slice(0, 40)); state.next.clicks++; items[i].click(); return true; }
+    }
+    state.next.misses++; warn('目录里没有未完成项'); report('next-none', { url: location.href });
+    return false;
+  }
+
+  // ------------------------------------------------------------ 平台适配
+  function matchByText(txt, maxLen = 600) {
+    const els = document.querySelectorAll('div,section,aside,form');
+    for (const el of els) { const t = el.innerText || ''; if (t.length < maxLen && t.includes(txt)) return el; }
+    return null;
+  }
+
+  const ADAPTER_SHENGSHENG = {
+    id: 'shengsheng',
+    onResponse(url, body) {
+      if (!/popQuiz/i.test(url)) return;
+      if (/insertUserAnswer/i.test(url)) {
+        const d = body && body.data;
+        const last = pending[pending.length - 1];
+        if (!d || !last) return;
+        if (d.state === 2) { state.quiz.correct++; bankPut(last.q, last.answer, true); log('✅ 答对', last.answer); pending.pop(); flushBank(); }
+        else if (d.state === 3) {
+          state.quiz.wrong++;
+          if (d.answer) { bankPut(last.q, d.answer, true); log('❌ 答错，正确答案：', d.answer, '→ 已写入本地题库'); pending.pop(); flushBank(); timers.push(setTimeout(() => this.poll(), 1500)); }
+          else { bankPut(last.q, last.answer, false); log('❌ 答错（平台未给答案）'); }
+        }
+      }
+    },
+    box() {
+      return document.querySelector('.pop-quiz-dialog, [class*="pop-quiz"], [class*="popQuiz"]') || matchByText('随堂练习', 400);
+    },
+    async poll() {
+      if (!CFG.enabled || !CFG.autoQuiz) return;
+      const box = this.box(); if (!box) return;
+      if (box.__ncAt && now() - box.__ncAt < 4000) return;
+      box.__ncAt = now(); state.quiz.seen++;
+
+      const itemUrl = quizFeed.filter(f => now() - f.at < 120000).pop();
+      let q = null;
+      if (itemUrl && itemUrl.item && itemUrl.item.question) q = itemUrl.item.question;
+      if (!q) {
+        const title = box.querySelector('.question-title,[class*="question-title"]');
+        const typeTxt = (box.querySelector('.question-type') || {}).innerText || '';
+        const type = /多选|不定项/.test(typeTxt) ? 2 : /判断/.test(typeTxt) ? 3 : 1;
+        const opts = Array.from(box.querySelectorAll('.option-item,[class*="option-item"]')).map(el => ({
+          name: String(((el.querySelector('.option-label') || {}).innerText || '')).replace(/[.\s]/g, ''),
+          data: String(((el.querySelector('.option-text,.option-content') || {}).innerText || el.innerText || '')).trim(),
+          el
+        })).filter(o => o.data && o.name);
+        if (!opts.length) return;
+        q = { type, name: (title && title.innerText) || '', optionList: opts.map(o => ({ name: o.name, data: o.data })) };
+        this.__domOpts = opts;
+      } else this.__domOpts = null;
+
+      const g = guess(q);
+      if (!g.answer) { warn('无法本地推断答案，交本人处理'); report('quiz-manual', { url: location.href, q: String(q.name).slice(0, 120) }); return; }
+      const picks = g.answer.split(',');
+      const opts = this.__domOpts || Array.from(box.querySelectorAll('.option-item,[class*="option-item"]')).map(el => ({
+        name: String(((el.querySelector('.option-label') || {}).innerText || '')).replace(/[.\s]/g, ''), el
+      }));
+      let clicked = 0;
+      for (const o of opts) if (picks.includes(o.name)) { o.el.click(); clicked++; }
+      if (!clicked) { warn('选项未命中，放弃本次', g.answer); return; }
+      await sleep(CFG.quizDelayMs);
+      const sub = Array.from(box.querySelectorAll('button,[class*="btn"]')).find(b => /提交|确定|确认|保存/.test(b.innerText || ''));
+      if (sub) { sub.click(); state.quiz.answered++; log('已作答并提交', { pick: g.answer, why: g.why, conf: g.conf }); }
+      else warn('未找到提交按钮');
+    }
+  };
+
+  const ADAPTER_QIYANG = {
+    id: 'qiyang',
+    onResponse(url, body) { this.__last = { url, at: now(), keys: body && typeof body === 'object' ? Object.keys(body) : null }; },
+    box() {
+      for (const s of ['[class*="pop"]', '[class*="quiz"]', '[class*="question"]', '.layui-layer']) {
+        const el = document.querySelector(s);
+        if (el && /题|选项|作答|练习|正确|错误/.test(el.innerText || '') && (el.innerText || '').length < 1200) return el;
+      }
+      return null;
+    },
+    async poll() {
+      if (!CFG.enabled || !CFG.autoQuiz) return;
+      const box = this.box(); if (!box) return;
+      if (box.__ncAt && now() - box.__ncAt < 4000) return;
+      box.__ncAt = now(); state.quiz.seen++;
+      const inputs = Array.from(box.querySelectorAll('input[type=radio],input[type=checkbox]'));
+      if (!inputs.length) { warn('弹层里没有可选项，交本人处理'); report('quiz-manual', { url: location.href, text: (box.innerText || '').slice(0, 200) }); return; }
+      const q = { type: inputs[0].type === 'checkbox' ? 2 : 1, name: (box.innerText || '').slice(0, 300), optionList: [] };
+      inputs.forEach((inp, i) => {
+        const lab = inp.closest('label') || (inp.parentElement && inp.parentElement.parentElement) || inp.parentElement;
+        q.optionList.push({ name: String.fromCharCode(65 + i), data: (lab ? lab.innerText : '').trim() });
+      });
+      const g = guess(q);
+      const picks = g.answer.split(',');
+      picks.forEach(p => { const i = p.charCodeAt(0) - 65; if (inputs[i] && !inputs[i].checked) inputs[i].click(); });
+      await sleep(CFG.quizDelayMs);
+      const sub = Array.from(box.querySelectorAll('button,a,input[type=submit]')).find(b => /提交|确定|确认|保存|交卷/.test(b.innerText || b.value || ''));
+      if (sub) { sub.click(); state.quiz.answered++; log('已作答（qiyang）', { pick: g.answer, why: g.why }); }
+      else warn('未找到提交按钮（qiyang）');
+    }
+  };
+
+  const P_ADAPTER = PLATFORM === 'shengsheng' ? ADAPTER_SHENGSHENG : PLATFORM === 'qiyang' ? ADAPTER_QIYANG : null;
+
+  // ------------------------------------------------------------ 控制面板
+  let panelEl = null;
+  function mountPanel() {
+    if (!CFG.panel || panelEl) return;
+    panelEl = document.createElement('div');
+    panelEl.id = 'netclass-panel';
+    panelEl.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:2147483646;font:12px/1.65 "Segoe UI",system-ui,"Microsoft YaHei",sans-serif;background:rgba(18,18,22,.92);color:#eaeaea;border-radius:10px;padding:8px 10px;min-width:200px;box-shadow:0 8px 24px rgba(0,0,0,.4);user-select:none';
+    const draw = () => {
+      if (!panelEl) return;
+      const v = pickVideo();
+      const vs = v ? `${Math.floor(v.currentTime || 0)}s/${Math.floor(v.duration || 0)}s x${v.playbackRate}${v.paused ? ' ⏸' : ' ▶'}` : '无视频';
+      panelEl.innerHTML =
+        `<div style="font-weight:600">NetClass ${VERSION} <span style="opacity:.55">${PLATFORM}</span> <span style="opacity:.55">${CFG.enabled ? '运行' : '暂停'}</span></div>
+         <div style="opacity:.8">视频 ${state.video.seen} · 结束 ${state.video.ended} · 倍速修正 ${state.video.rateFixes}</div>
+         <div style="opacity:.8">弹题 见${state.quiz.seen} 答${state.quiz.answered} ✔${state.quiz.correct} ✘${state.quiz.wrong} 库${Object.keys(bank).length}</div>
+         <div style="opacity:.8">${vs}</div>
+         <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
+           <button data-a="toggle">${CFG.enabled ? '暂停' : '启动'}</button>
+           <button data-a="rate">倍速 ${CFG.rate}x</button>
+           <button data-a="quiz">答题</button>
+           <button data-a="next">下一节</button>
+           <button data-a="hide">收起</button>
+         </div>`;
+      panelEl.querySelectorAll('button').forEach(b => {
+        b.onclick = () => {
+          const a = b.dataset.a;
+          if (a === 'toggle') { CFG.enabled = !CFG.enabled; saveCfg(); }
+          if (a === 'rate') { CFG.rate = CFG.rate >= 4 ? 1 : +(CFG.rate + 0.5).toFixed(1); saveCfg(); const v2 = pickVideo(); if (v2) v2.playbackRate = CFG.rate; }
+          if (a === 'quiz') { P_ADAPTER && P_ADAPTER.poll(); }
+          if (a === 'next') { goNext(); }
+          if (a === 'hide') { panelEl.style.display = 'none'; setTimeout(() => { if (panelEl) panelEl.style.display = ''; }, 8000); }
+          draw();
+        };
+      });
+    };
+    draw();
+    timers.push(setInterval(draw, 2000));
+    (document.body || document.documentElement).appendChild(panelEl);
+  }
+
+  // ------------------------------------------------------------ 启动
+  function start() {
+    log('实现模块启动', { version: VERSION, platform: PLATFORM, host: HOST });
+    hookFetch(); hookXhr();
+    videoWatch();
+    timers.push(setInterval(() => { state.loopTicks++; P_ADAPTER && P_ADAPTER.poll().catch(err); }, 3000));
+    timers.push(setInterval(() => {
+      if (location.href !== state.route) { state.route = location.href; log('路由变化', state.route); timers.push(setTimeout(() => applyPolicy(pickVideo(), 'route'), 1500)); }
+    }, 1500));
+    if (document.body) mountPanel(); else document.addEventListener('DOMContentLoaded', mountPanel, { once: true });
+    // 探测模式：把接口清单/题目结构报回本机
+    if (CFG.probe) timers.push(setInterval(() => report('probe', { url: location.href, apis: apiLog.slice(-40), quiz: quizFeed.slice(-3), bank: Object.keys(bank).length }), 15000));
+    report('boot', { version: VERSION, platform: PLATFORM, url: location.href });
+  }
+
+  window.NetClass = {
+    version: VERSION, platform: PLATFORM, cfg: CFG, state,
+    vid: pickVideo, next: goNext, poll: () => P_ADAPTER && P_ADAPTER.poll(),
+    rate(r) { CFG.rate = r; saveCfg(); const v = pickVideo(); if (v) v.playbackRate = r; return r; },
+    apis: () => apiLog.slice(-60), feed: () => quizFeed.slice(-5), bank: () => bank,
+    login: () => loginInfo,
+    quizElements() {
+      const out = [];
+      document.querySelectorAll('[class*=quiz],[class*=question],[class*=pop],[class*=dialog],[class*=modal],[class*=layer]').forEach(e => {
+        const t = (e.innerText || '').trim();
+        if (t && t.length < 1500) out.push({ cls: String(e.className).slice(0, 90), text: t.slice(0, 200), visible: !!(e.offsetWidth || e.offsetHeight) });
+      });
+      return out.slice(0, 12);
+    },
+    videoInfo() {
+      const vs = Array.from(document.querySelectorAll('video'));
+      return vs.map(v => ({ src: String(v.currentSrc || '').slice(0, 100), dur: Math.round(v.duration || 0), t: Math.round(v.currentTime || 0), rate: v.playbackRate, paused: v.paused, muted: v.muted, ended: v.ended }));
+    },
+    dispose() {
+      try { timers.forEach(t => clearInterval(t) || clearTimeout(t)); } catch (_) { }
+      try { cleanups.forEach(f => { try { f(); } catch (_) { } }); } catch (_) { }
+      try { if (panelEl && panelEl.parentNode) panelEl.parentNode.removeChild(panelEl); } catch (_) { }
+      flushBank();
+      panelEl = null;
+      log('旧实例已回收');
+    }
+  };
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
+  else start();
+})();
