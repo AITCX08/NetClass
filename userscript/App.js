@@ -419,11 +419,18 @@
   }
 
   // ------------------------------------------------------------ 站点提示 / 顺序校验
-  /** 读站点当前的 toast 文案（「请按顺序观看视频」就是它弹的） */
+  /** 读站点当前**可见**的 toast 文案（「请按顺序观看视频」就是它弹的） */
   function toastText() {
     try {
       const els = document.querySelectorAll('.van-toast__text, .van-toast, [class*=toast__text]');
       for (const e of els) {
+        // 关键：Vant 的 toast 节点是常驻 DOM 的，隐藏时文案还在。
+        // 不看可见性会把历史提示当成本次拦截，导致一直误退避。
+        const box = e.closest('.van-toast') || e;
+        const cs = getComputedStyle(box);
+        const visible = (box.offsetWidth || box.offsetHeight) &&
+          cs.display !== 'none' && cs.visibility !== 'hidden' && +cs.opacity > 0.05;
+        if (!visible) continue;
         const t = (e.innerText || '').trim();
         if (t) return t;
       }
