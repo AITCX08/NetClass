@@ -244,15 +244,27 @@
     return PLATFORM === 'qiyang' ? (CFG.rateQiyang || 2) : (CFG.rateShengsheng || 1);
   }
 
+  /**
+   * 播放器就绪判定：xgplayer / Aliplayer 走 MSE，装载期间对 <video> 动手（尤其 play()）
+   * 会打断起播，表现为 readyState 永远 0、播放器卡 isloading。所以只在有数据后才接管。
+   */
+  function mediaReady(v) {
+    try {
+      return v.readyState >= 2 && !!v.duration && isFinite(v.duration) && v.duration > 0;
+    } catch (_) { return false; }
+  }
+
   function applyPolicy(v, why) {
     if (!v || !CFG.enabled) return;
     try {
+      // 静音随时可做（不影响装载）
       if (CFG.mute && (!v.muted || v.volume !== 0)) { v.muted = true; v.volume = 0; }
+      if (!mediaReady(v)) return;                    // 还没起播，绝不插手
       const R = effRate();
       if (R && Math.abs((v.playbackRate || 1) - R) > 0.01) {
         v.playbackRate = R; state.video.rateFixes++; log('倍速→', R, why);
       }
-      if (CFG.autoPlay && v.paused && !v.ended && v.currentTime >= 0) {
+      if (CFG.autoPlay && v.paused && !v.ended) {
         v.play().catch(e => { state.video.resumed++; });
       }
     } catch (e) { err(e); }
@@ -278,12 +290,12 @@
         });
         v.addEventListener('pause', () => {
           if (!CFG.autoPlay || !CFG.antiPause) return;
-          if (v.ended || v.currentTime < 0.5) return;
+          if (v.ended || !mediaReady(v)) return;
           timers.push(setTimeout(() => { if (v.paused && !v.ended) applyPolicy(v, 'anti-pause'); }, 1200));
         });
         v.addEventListener('ratechange', () => {
           const R = effRate();
-          if (R && Math.abs((v.playbackRate || 1) - R) > 0.01 && !v.paused) {
+          if (mediaReady(v) && R && Math.abs((v.playbackRate || 1) - R) > 0.01 && !v.paused) {
             timers.push(setTimeout(() => { try { v.playbackRate = R; state.video.rateFixes++; } catch (_) { } }, 600));
           }
         });
@@ -367,21 +379,25 @@
       if (pendingQuiz.length > 10) pendingQuiz.shift();
       return rec;
     },
-    /** 课程页自动进入第一个未完成课时（只在没有视频时才做） */
+    /** 课程页自动进入第一个未完成课时（只在没有视频时才做；点了没出播放器会重试） */
     async autoEnterLesson() {
-      if (pickVideo()) return false;
-      if (this.__ssEntered) return false;
+      if (pickVideo()) { this.__ssEntered = null; this.__ssTries = 0; return false; }
+      const now2 = now();
+      if (this.__ssEntered && now2 - this.__ssEntered < 12000) return false;   // 刚点过，给它 12 秒出播放器
+      this.__ssTries = (this.__ssTries || 0) + 1;
+      if (this.__ssTries > 6) return false;                                    // 试太多次就放弃，等下次页面加载
       const items = catalogItems();
       if (!items.length) return false;
       const status = el => ((el.querySelector('.lesson-status-container') || el).innerText || '');
       const done = el => /已完成/.test(status(el));
       const pending = items.find(el => !done(el));
       if (!pending) { log('shengsheng 目录里没有未完成课时'); return false; }
-      this.__ssEntered = now();
+      this.__ssEntered = now2;
       const name = (pending.innerText || '').replace(/\s+/g, ' ').slice(0, 40);
-      log('shengsheng 进入未完成课时:', name);
+      log('shengsheng 进入未完成课时(第' + this.__ssTries + '次):', name);
+      try { pending.scrollIntoView({ block: 'center' }); } catch (_) { }
       pending.click();
-      report('enter-lesson', { url: location.href, lesson: name });
+      report('enter-lesson', { url: location.href, lesson: name, try: this.__ssTries });
       return true;
     },
     onResponse(url, body) {

@@ -23,11 +23,13 @@ let out = shell.replace(marker, `${marker}\n  // === 内联实现（构建时嵌
 const fallbackCall = "        warn('本机模块服务不可用（status=' + status + '）：' + BASE + MODULE + '，进入兜底模式', reason);\n        return inlineFallback();";
 if (!out.includes(fallbackCall)) throw new Error('fallback marker not found');
 out = out.replace(fallbackCall,
-  `        warn('本机模块服务不可用（status=' + status + '），使用内联实现', reason);
+  `        const inlineH = 'inline-' + hash(INLINE_APP);
+        if (currentHash === inlineH) return;   // 内联版已在跑，别每轮重复注入
+        warn('本机模块服务不可用（status=' + status + '），使用内联实现', reason);
         try {
           if (window.NetClass && window.NetClass.dispose) window.NetClass.dispose();
           const ok = inject(INLINE_APP, 'inline-App');
-          if (ok) { currentHash = 'inline-' + hash(INLINE_APP); say('内联实现已加载'); }
+          if (ok) { currentHash = inlineH; say('内联实现已加载'); }
           else inlineFallback();
         } catch (e) { warn('内联注入失败', e && e.message); inlineFallback(); }
         return;`);

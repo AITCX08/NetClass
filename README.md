@@ -11,14 +11,40 @@
 
 | 项目 | 状态 |
 |---|---|
-| OCS 脚本列表 | ✅ 已加入 `NetClass 网课自动处理`（`render.scripts[].id=990000000001`，`isLocalScript=true`） |
-| 自动安装链路 | ✅ 实测：OCS 打开 `file://C:/.../netclass.user.js` → 油猴弹 `ask.html` 安装页 → 点「安装/重新安装」→ 写入成功 |
-| shengsheng 自动化 | ✅ 实测：自动进入未完成课时 → 静音播放 → 实测 1.00x → 播完自动下一节 |
-| qiyang 自动化 | ✅ 实测：自动遍历章节 → 跳过已完成（`isEnd=1`）→ 未完成章节静音播放 → 实测 2.00x → 播完自动下一章 |
-| 随堂弹题 | ✅ 接口与结构已解出并实现（`getByCourseAndNodeId` / `insertUserAnswer`，答错回填正确答案）；待真实弹题验收 |
-| 本机模块服务 | ✅ 已装成登录自启计划任务 `NetClassServer`（`http://127.0.0.1:17800`） |
+| **脚本运行方式** | ✅ **自研加载器扩展**（`loader-ext/`）用 `chrome.userScripts` 直接注册并执行；**不依赖油猴** |
+| 自动加载链路 | ✅ 扩展放在 `OCS Desktop\downloads\extensions\netclass-loader\`，OCS 每次启动浏览器自动扫描加载 |
+| shengsheng 自动化 | ✅ 实测：自动进入未完成课时 → 静音播放 → **实测 1.00x** → 播完自动下一节；随堂弹题自动作答 |
+| qiyang 自动化 | ✅ 实测：自动遍历章节 → 跳过已完成 → **实测 1.95~2.00x** → 播完自动下一章 |
+| 随堂弹题 | ✅ 实测抓到并作答（「感受性是（ ）」「表象是（ ）」），答错回填正确答案到本地题库 |
+| 本机模块服务 | ✅ 登录自启计划任务 `NetClassServer`（`http://127.0.0.1:17800`）；加载器每 2 分钟拉最新脚本 |
 
-**用户无需任何操作**：从 OCS Desktop 启动任一台「知道1 / 知道2」浏览器，脚本会自动装上并开始处理。
+**用户无需任何操作**：浏览器一起来，加载器扩展自动注册脚本，两站自动开跑。
+
+### 0.1 两个关键坑（都踩过并已修）
+
+**坑 1：Tampermonkey 在 OCS 内置 Chrome 137 里「装得上、不执行」**
+
+排查链：`chrome.userScripts` API 可用 → TM 桥接脚本已注册且确实在页面里跑起来（存在名为「篡改猴」的 isolated world）
+→ TM 存储里有脚本且启用 → **但任何用户脚本都不注入**（连 3 行 hello world 都不跑）。
+用 `chrome.userScripts.register({js:[{code:'...'}]})` 自己注册却能自动注入 —— 证明能力没问题，是 TM 这条链在
+「未打包扩展 + 计划任务启动 + `--no-sandbox`」这套环境下不可靠。
+
+→ 解决：**写自己的加载器扩展**，把「注册 + 执行」这层自己做掉。OCS 会扫描扩展目录自动加载，交付方式不变。
+
+**坑 2：脚本在播放器初始化阶段调 `video.play()` 会打断起播**
+
+xgplayer / Aliplayer 走 MSE，装载期间对 `<video>` 动手会让播放器卡在 `xgplayer-isloading`，
+`readyState` 永远 0、`duration` 为 null —— 这正是最初「shengsheng 视频不起播」的真凶。
+（隔离验证：关掉脚本 → 手动点课时 → 视频正常 `readyState=4, duration=921`。）
+
+→ 解决：`mediaReady(v)` 就绪判定，只有 `readyState>=2 && duration>0` 之后才接管播放/倍速/续播。
+
+### 0.2 运行现状
+
+- 两台浏览器跑在**用户登录会话**里（窗口可见）：`--no-sandbox` 是必须的（计划任务上下文里 Chrome 沙箱起不来，会秒退 exit=3）
+- shengsheng 走 1x（站点有「请勿快进观看视频」限制），qiyang 走 2x（站点播放器自带 2x 档）
+- 脚本只做页面内正常播放 + 页面自身表单作答，不伪造学时、不跳课（站点有「请按顺序观看视频」防跳校验）
+
 
 ---
 
@@ -89,108 +115,134 @@ var getUrl = "/agent/MemberGoodscourses/finish?goodscourses_id=XXXX";  // 进度
 ```
 netclass-20261013/
 ├─ README.md                      本文件
-├─ dist/netclass.user.js          构建产物：自包含用户脚本（OCS/油猴安装的就是它）
+├─ dist/netclass.user.js          构建产物：自包含脚本（加载器注册的就是它）
+├─ loader-ext/                    ★ 加载器扩展（真正干活的执行宿主）
+│  ├─ manifest.json               MV3，permissions: userScripts
+│  ├─ background.js               启动/每2分钟：拉最新脚本 → chrome.userScripts 注册 → 补注入已开标签页
+│  └─ bundled.js                  构建产物：内置脚本副本（拉不到服务时用）
 ├─ userscript/
-│  ├─ netclass.shell.user.js      壳源码（壳 + 内联兜底 + 热加载）
-│  └─ App.js                      实现模块（两站适配 / 弹题 / 题库 / 面板）
+│  ├─ netclass.shell.user.js      壳源码
+│  └─ App.js                      实现模块（两站适配 / 弹题 / 题库 / 面板 / 播放就绪判定）
 ├─ scripts/
 │  ├─ build.mjs                   打包：壳 + App.js → dist/netclass.user.js
-│  ├─ ocs-register.mjs            把脚本注册进 OCS 脚本列表（config.json）
-│  ├─ ocs-install.mjs             复刻 OCS 安装流程：开 URL → 点「安装」（装/更新脚本）
+│  ├─ build-loader.mjs            生成 loader-ext/bundled.js
+│  ├─ ocs-install.mjs             复刻 OCS 安装流程（往油猴装脚本；现在只作备用通道）
+│  ├─ ocs-register.mjs            把脚本注册进 OCS 脚本列表（备用通道）
+│  ├─ ensure-devmode.mjs          开扩展开发者模式（诊断用）
 │  ├─ nc.mjs                      PC 侧控制台：up/tabs/new/eval/run/watch/probe
-│  ├─ tunnel.ps1                  建立 SSH 端口转发（CDP 用）
-│  ├─ netclass-server.ps1         笔记本本机服务（17800）：热加载 + 回传
+│  ├─ tunnel.ps1                  SSH 端口转发（CDP 用）
+│  ├─ netclass-server.ps1         笔记本本机服务（17800）：提供最新脚本 + 回传
 │  ├─ netclass-deploy.ps1         上传/启停本机服务
-│  ├─ measure.mjs                 实测播放速度（媒体增量 / 真实时间）
+│  ├─ measure.mjs                 实测播放速度
+│  ├─ probe-page.mjs              通用页面探针（视频/脚本状态）
 │  ├─ ss-*.mjs / qy-*.mjs         两站的探查与观测脚本
-│  └─ tm-*.mjs                    Tampermonkey 存储/注册/安装相关工具
-└─ runs/                          实测记录、远端脚本、Tampermonkey 存储分析
+│  └─ tm-*.mjs                    Tampermonkey 存储/注册/安装/诊断工具
+└─ runs/                          实测记录、远端脚本
 ```
 
 ---
 
-## 3. 常用操作
+## 3. 部署与常用操作
+
+### 3.1 首次/更新部署
 
 ```powershell
-# 隧道（每次开工先做）
-powershell -File scripts\tunnel.ps1 -Port 9224     # shengsheng（b33d3127）
-powershell -File scripts\tunnel.ps1 -Port 9225     # qiyang（3a6e9e38）
+# 1) 构建
+node scripts\build.mjs          # → dist/netclass.user.js
+node scripts\build-loader.mjs   # → loader-ext/bundled.js
 
-# 起一个带调试端口+油猴的浏览器
-node scripts\nc.mjs up --profile b33d3127b601404c8d0f694bb02939fa --port 9224
-node scripts\nc.mjs up --profile 3a6e9e389f794785bb5048d4bf39a36c --port 9225
-
-# 装/更新脚本（等价于 OCS 启动时做的事）
-node scripts\ocs-install.mjs --port 9224
-node scripts\ocs-install.mjs --port 9225
-
-# 观察
-node scripts\ss-watch.mjs --port 9224 --rounds 5     # shengsheng：脚本状态 + 视频进度
-node scripts\qy-watch.mjs --port 9225 --rounds 5     # qiyang：章节推进
-node scripts\measure.mjs  --port 9225 --target bjqiyang --secs 20   # 实测倍速
-
-# 改了 App.js 之后
-node scripts\build.mjs
-scp dist\netclass.user.js WJX@192.168.1.8:C:/Users/WJX/AppData/Local/TaskMesh/netclass/netclass.user.js
-# （本机服务会把 App.js 热加载给已装脚本；内核改动才需要重装）
-
-# OCS 脚本列表管理
-node scripts\ocs-register.mjs --action status
-node scripts\ocs-register.mjs --action add
-node scripts\ocs-register.mjs --action remove
+# 2) 上传到笔记本（加载器扩展目录 + 本机服务目录）
+#    loader-ext\* → %APPDATA%\OCS Desktop\downloads\extensions\netclass-loader\
+#    dist\netclass.user.js + userscript\App.js → %LOCALAPPDATA%\TaskMesh\netclass\
 ```
+
+### 3.2 启动浏览器（可见窗口，登录会话内）
+
+```powershell
+node scripts\nc.mjs run --file runs\remote\launch-loader.ps1
+```
+
+要点（少一个都不行）：
+- 用**计划任务 + `/IT`** 启动，才能在用户桌面会话里出窗口（SSH 里直接起是 session 0，看不见）
+- 必须 **`--no-sandbox`**（计划任务上下文里 Chrome 沙箱起不来 → exit=3 秒退）
+- `--load-extension` 传**逗号分隔的两个目录**：tampermonkey + netclass-loader
+
+### 3.3 观察与验证
+
+```powershell
+node scripts\probe-page.mjs 9224 shengshengketang    # 视频/脚本状态
+node scripts\probe-page.mjs 9225 bjqiyang
+node scripts\measure.mjs --port 9224 --target shengshengketang --secs 15   # 实测倍速
+node scripts\nc.mjs run --file runs\remote\launch-loader.ps1               # 重启两站
+```
+
+### 3.4 改了 App.js 之后
+
+两种生效方式：
+- **快**：`build.mjs` + `build-loader.mjs` → scp `bundled.js` 到扩展目录 → 页面刷新（或等加载器 2 分钟轮询）
+- **自动**：scp 新的 `netclass.user.js` 到 %LOCALAPPDATA%\TaskMesh\netclass\ → 加载器 2 分钟内拉取并重新注册 →
+  新开的页面自动用新版
+
 
 ---
 
-## 4. 自动安装链路（OCS 脚本列表）
+## 4. 执行宿主：自定义加载器扩展
 
-OCS 2.9.24 渲染层逻辑（已从 `public/assets/index.c87a5b08.js` 确认）：
+### 4.1 为什么不用油猴
+
+排查过的事实：`chrome.userScripts` API 可用、油猴桥接脚本已注册且确实在页面里执行（存在名为「篡改猴」的
+isolated world）、存储里脚本存在且启用、开发者模式已开、「允许运行用户脚本」开关已开、站点访问权限正常
+—— **但任何用户脚本都不注入**（连 3 行 hello world 都不跑）。
+
+同时验证：自己调 `chrome.userScripts.register({js:[{code:'...'}]})` **能**自动注入。
+结论：能力没问题，是油猴这条链在 OCS 内置 Chrome 137 + 未打包扩展 + 计划任务启动这套环境下不可靠。
+
+### 4.2 加载器怎么工作
 
 ```js
-const enabledUserScripts = store.render.scripts.filter(s => s.enable);
-userscripts = enabledUserScripts.map(s => (s.isLocalScript ? "file://" : "") + (s.info?.code_url || s.url));
+// background.js 核心
+await chrome.userScripts.configureWorld({ worldId: 'netclass', csp: "...", messaging: false });
+await chrome.userScripts.register([{
+  id: 'netclass-user-script',
+  matches: ['https://edu.shengshengketang.com/*', 'https://study.bjqiyang.com/*'],
+  js: [{ code }],                 // ← 注意：这个 Chrome 只接受 {code} 对象，不接受裸字符串
+  runAt: 'document_start',
+  allFrames: false,
+  world: 'MAIN'                   // 必须在主世界，才能操作页面 DOM 和站点播放器
+}]);
 ```
 
-worker 的 `initScripts()`：逐个 `page.goto(url)` → 等油猴把 `chrome-extension://<id>/ask.html` 安装页弹出来 →
-`document.querySelector('[class*="primary"]') || document.querySelector('[type*="button"]')` → 文本含 安装/更新/添加/降级/install/update/add → 点它。
+- 启动 / 安装 / **每 2 分钟**：从 `http://127.0.0.1:17800/netclass.user.js` 拉最新脚本；拉不到就用 `bundled.js` 内置副本
+- 注册后还会**补注入已打开的标签页**（解决「页面比扩展先加载」的竞态）
+- OCS 每次启动浏览器会 `getExtensionPaths(extensionsFolder)` **扫描扩展目录全量加载**，所以放进去即生效，无需改配置
 
-所以本脚本用 **本地文件模式**：
+### 4.3 备用通道：OCS 脚本列表
 
-```json
-{
-  "id": 990000000001,
-  "url": "C:/Users/WJX/AppData/Local/TaskMesh/netclass/netclass.user.js",
-  "enable": true,
-  "isLocalScript": true,
-  "info": { "code_url": "C:/Users/WJX/AppData/Local/TaskMesh/netclass/netclass.user.js", "name": "NetClass 网课自动处理", "version": "0.4.0", ... }
-}
-```
-
-> 为什么不用 `http://127.0.0.1:17800/...`：安装页在 `https://www.tampermonkey.net`，
-> 从 HTTPS 页面取 HTTP 资源会被 Chrome 拦（实测 `ERR_CONNECTION_REFUSED` / `Failed to fetch`）。
-> `file://` 没有这个问题。
+`render.scripts` 里仍保留 `NetClass 网课自动处理`（`isLocalScript=true`，指向本地 `netclass.user.js`），
+油猴能正常工作时也会装上。当前它不执行，实际执行由加载器承担。
 
 ---
 
 ## 5. 脚本行为说明
 
 **shengsheng（心理学导论）**
-1. 页面加载 → 壳启动 → 从本机服务热加载 `App.js`（不可用则用内联版）
-2. 课程页没有视频时，自动点开目录里第一个**未完成**课时（`.lesson-item`，看 `.lesson-status-container` 是否「已完成」）
-3. 视频统一策略：静音、按平台倍速播放（默认 1x；站点播放器自带 2x 档，可在面板上调）
-4. 暂停/掉速自动恢复（`pause` / `ratechange` 兜底）
-5. 播完自动下一节（先找「下一节」按钮，找不到就按目录顺序找下一个未完成项）
-6. 随堂弹题：监听页面自身接口响应拿题 → 本地题库命中则直接答 → 未命中走启发式 →
-   提交后按 `data.state` 判定，**答错把平台回传的正确答案写回题库**
+1. 页面加载 → 壳启动 → 用内置实现（主世界下无法跨域拉本机服务）
+2. 课程页没有视频时，自动点开目录里第一个**未完成**课时（`.lesson-item`，看 `.lesson-status-container`）；
+   若点了没出播放器会**重试**（12 秒一次，最多 6 次）
+3. **等播放器就绪**（`readyState>=2 && duration>0`）后才接管：静音、按平台倍速播放
+4. 暂停/掉速自动恢复（就绪判定后生效）
+5. 播完自动下一节（先找站点「下一节」按钮，找不到就按目录顺序找下一个未完成项；**排除自己的面板按钮**）
+6. 随堂弹题：监听页面自身接口响应拿题 → 本地题库命中直接答 → 未命中走启发式 →
+   按 `insertUserAnswer` 返回的 `state`（2 对/3 错）判定，**答错把平台回传的正确答案写回题库**
 
 **qiyang（三级实务观摩课程）**
-1. 课程页（`/agent/Goods/courses?goods_id=…`）→ 收集录播章节 → 进入第一个未完成章节
-2. 章节页读内联变量：`isEnd=1` 直接跳下一章；`isEnd=0` 则静音播放（默认 2x，走站点播放器）
+1. 课程页 → 收集录播章节 → 进入第一个未完成章节
+2. 章节页读内联变量：`isEnd=1` 直接跳下一章；`isEnd=0` 则静音播放（默认 2x，走站点播放器 `setSpeed`）
 3. 站点自己的 `video.js` 负责进度上报（每 300s / 拖动 / 结束时），脚本不伪造上报
-4. 播完 → 下一章（按章节列表顺序，跳过直播课）
+4. 播完 → 下一章（按章节顺序，跳过直播课）
 5. `sessionStorage` 记录本轮已过章，避免来回跳
 
-**停用方式**：页面右下角面板点「暂停」；或油猴面板里禁用 `NetClass 网课自动处理`。
+**停用方式**：页面右下角面板点「暂停」；或在 `chrome://extensions` 里禁用 `NetClass Loader`。
 
 ---
 
@@ -207,9 +259,11 @@ worker 的 `initScripts()`：逐个 `page.goto(url)` → 等油猴把 `chrome-ex
 
 ## 7. 待办 / 已知限制
 
-1. **弹题还没有真实样本验收**：目前 UI 文案提示该课程暂无弹题或未到弹题节点；逻辑按接口结构实现完毕。
-2. **shengsheng 倍速保守**：部分课程站点限制倍速（站点提示「此课程不能使用倍速」），默认 1x；如需提速请在面板手动调并观察平台是否回落。
-3. **直播课不处理**：qiyang 36 个直播课按时间开播，非录播，脚本跳过（如需录播回看支持，需另接站点直播接口）。
-4. **运行实例**：当前两台浏览器由控制台以调试端口启动（便于观察），OCS 面板里显示为未运行；
-   如需 OCS 托管，关闭它们后在 OCS 点「运行」即可（脚本会自动安装）。
-
+1. **`--no-sandbox` 是必需的妥协**：计划任务上下文里 Chrome 沙箱起不来（exit=3 秒退），只能关沙箱。
+   若改为从 OCS 面板点「运行」启动，则不需要这个参数（但那样窗口由 OCS 管理）。
+2. **油猴仍然是坏的**：本环境里它不执行任何用户脚本。加载器已完全替代它，OCS 脚本列表里的条目仅作备用。
+3. **直播课不处理**：qiyang 36 个直播课按时间开播，非录播，脚本跳过（如需回看支持，需另接站点直播接口）。
+4. **弹题判定回写待二次验证**：已实测「抓到题 → 作答 → 弹窗关闭」，平台判定回包与题库回填逻辑已实现，
+   待再遇到新弹题时确认计分。
+5. **窗口归属**：当前两台浏览器由计划任务在登录会话里启动（可见），OCS 面板显示为未运行。
+   若要让 OCS 托管：关掉窗口，在 OCS 点「运行」即可（扩展会自动加载，脚本自动注册并运行）。

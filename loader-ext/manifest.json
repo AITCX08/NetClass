@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "NetClass Loader",
+  "version": "1.0.0",
+  "description": "在 chrome.userScripts 里注册并运行 NetClass 网课自动处理脚本（不依赖用户脚本管理器）",
+  "permissions": ["userScripts", "storage", "alarms"],
+  "host_permissions": ["http://127.0.0.1/*", "https://edu.shengshengketang.com/*", "https://study.bjqiyang.com/*"],
+  "background": { "service_worker": "background.js" }
+}
