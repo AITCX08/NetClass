@@ -49,15 +49,21 @@ const docText = readText(String(A.doc || '')).replace(/\s+/g, '');
 const factsRaw = fs.readFileSync(String(A.facts || ''), 'utf8');
 if (!docText) { console.log('读不到成稿正文: ' + A.doc); process.exit(2); }
 
-// 从事实文件里抽词：中文 4~20 字的连续串（去重、去掉泛词）
-const STOP = /^(课程学习|教师专业发展|必修|模块|温故知新|继续学习|课程名称|层次|操作|培训|研修|学习|老师|教师|教育|教学|学生)$/;
+// 从事实文件里抽词：先按顿号/逗号/括号/斜杠切成词，再取 4~20 字的中文串（去重、去泛词）
+const STOP = /^(课程学习|教师专业发展|必修|模块|温故知新|继续学习|课程名称|层次|操作|培训|研修|学习|老师|教师|教育|教学|学生|课程事实|课程清单|活动)$/;
 const words = new Set();
 for (const line of factsRaw.split(/\r?\n/)) {
   const l = line.replace(/^[#*\-\s>|]+/, '').trim();
   if (!l || /^[#*\-|>\s]+$/.test(line)) continue;
-  for (const m of l.matchAll(/[\u4e00-\u9fa5A-Za-z0-9．.：:（）()]{4,24}/g)) {
-    const w = m[0].replace(/[：:（）()]/g, '');
-    if (w.length >= 4 && !STOP.test(w)) words.add(w);
+  for (const piece of l.split(/[、，,；;｜|/／（）()：:\s]+/)) {
+    const w = piece.replace(/[．.。]+$/, '').trim();
+    if (w.length < 4 || w.length > 20) continue;
+    if (!/[\u4e00-\u9fa5]/.test(w)) continue;
+    if (STOP.test(w)) continue;
+    words.add(w);
+    // 长标题再补一个"核心片段"（冒号前后各取一次），提高命中机会
+    const cut = w.split(/[——\-:：]/).filter(x => x.length >= 4);
+    if (cut.length > 1) cut.forEach(x => { if (!STOP.test(x)) words.add(x); });
   }
 }
 const hits = [];
