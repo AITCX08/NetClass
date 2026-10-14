@@ -496,7 +496,21 @@
       // 跳不动了：如果确实没有未完成项，才算真刷完
       const its = catalogItems();
       const left = its.filter(el => !lessonDone(el)).length;
-      if (its.length && !left) markAllDone('课时目录里已没有未完成项（共 ' + its.length + ' 课）');
+      if (its.length && !left) {
+        // 双重确认：课时列表可能还在渲染，读早了会把「还没渲染出状态」当成「全部已完成」。
+        // 隔 4 秒再确认一次，两次都干净才走。
+        log('课时目录暂显全部完成，4 秒后二次确认…');
+        timers.push(setTimeout(() => {
+          const its2 = catalogItems();
+          const left2 = its2.filter(el => !lessonDone(el)).length;
+          if (its2.length && !left2) {
+            log('二次确认通过：本子课程 ' + its2.length + ' 课全部完成');
+            if (P_ADAPTER && P_ADAPTER.leaveSub) P_ADAPTER.leaveSub();
+          } else {
+            log('二次确认发现仍有 ' + left2 + ' 课未完成 → 继续播放，不跳走');
+          }
+        }, 4000));
+      }
     }
     return moved;
   }
@@ -544,6 +558,47 @@
     const els = document.querySelectorAll('div,section,aside,form');
     for (const el of els) { const t = el.innerText || ''; if (t.length < maxLen && t.includes(txt)) return el; }
     return null;
+  }
+
+  // -------------------------------------------------- shengsheng 三层导航
+  // 站点层级： /home（课程分类） → /record/sub/<id>（子课程列表） → /course/v2/<id>（课时目录）
+  function ssLevel() {
+    const p = location.pathname;
+    if (/^\/course\/v2\//.test(p)) return 3;
+    if (/^\/record\/sub\//.test(p)) return 2;
+    if (/^\/home/.test(p)) return 1;
+    return 0;
+  }
+  const SS_PARENT_KEY = 'nc.ss.parentUrl';
+  const SS_DONE_COURSES = 'nc.ss.coursesDone';
+
+  function ssCardName(el) {
+    const t = el.querySelector('.card-title');
+    return ((t && t.innerText) || el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 30);
+  }
+  function ssDoneCourses() { try { return JSON.parse(sessionStorage.getItem(SS_DONE_COURSES) || '[]'); } catch { return []; } }
+  function ssMarkCourseDone(name) {
+    try { const d = ssDoneCourses(); if (!d.includes(name)) { d.push(name); sessionStorage.setItem(SS_DONE_COURSES, JSON.stringify(d)); } } catch (_) { }
+  }
+
+  /** 子课程列表：从 state-tag 反推卡片（学习中的排最前） */
+  function ssSubCourses() {
+    const tags = Array.from(document.querySelectorAll('span.state-tag'));
+    const out = [];
+    for (const tag of tags) {
+      const state = (tag.innerText || '').trim();
+      if (!/学习中|未开始|已完成/.test(state)) continue;
+      // 卡片根：往上找到带 padding 的卡片容器（含名称）
+      let card = tag.closest('div[class*="flex-col"]') || tag.parentElement;
+      for (let i = 0; i < 3 && card && card.parentElement; i++) {
+        if ((card.innerText || '').replace(/\s+/g, ' ').length > 12) break;
+        card = card.parentElement;
+      }
+      const full = ((card && card.innerText) || '').replace(/\s+/g, ' ').trim();
+      const name = full.split(/学习中|未开始|已完成/)[0].replace(/\d+人学习/g, '').trim().slice(0, 40);
+      out.push({ state, name, el: card });
+    }
+    return out;
   }
 
   const ADAPTER_SHENGSHENG = {
@@ -611,17 +666,80 @@
     box() {
       return document.querySelector('.pop-quiz-dialog, [class*="pop-quiz"], [class*="popQuiz"]') || matchByText('随堂练习', 400);
     },
+    // ============ 三层导航：首页 → 课程 → 子课程 ============
+    /** L1：进入下一个还没做完的课程 */
+    enterNextCourse() {
+      const cards = Array.from(document.querySelectorAll('.classify-card'));
+      if (!cards.length) return null;
+      const done = ssDoneCourses();
+      const left = cards.filter(c => !done.includes(ssCardName(c)));
+      if (!left.length) return null;                 // 两门课都完了
+      const c = left[0];
+      log('L1 进入课程 ->', ssCardName(c), '（已完成 ' + done.length + '/' + cards.length + ' 门）');
+      try { sessionStorage.setItem('nc.ss.currentCourse', JSON.stringify({ name: ssCardName(c), at: now() })); } catch (_) { }
+      this.__ssNavAt = now();
+      c.click();
+      return true;
+    },
+    /** L2：进入下一个未完成的子课程 */
+    enterNextSub() {
+      const subs = ssSubCourses();
+      if (!subs.length) { log('L2 未识别到子课程条目'); return null; }
+      const next = subs.find(s => s.state !== '已完成');
+      if (!next) return null;                        // 本课程子课程全完成
+      log('L2 进入子课程 ->', next.name, '（' + next.state + '）', '余 ' + subs.filter(s => s.state !== '已完成').length + '/' + subs.length);
+      try { sessionStorage.setItem(SS_PARENT_KEY, location.href); } catch (_) { }
+      this.__ssNavAt = now();
+      next.el.click();
+      return true;
+    },
+    /** L2 全部子课程完成 → 记下这门课，回首页挑下一门 */
+    leaveCourse() {
+      const subs = ssSubCourses();
+      const name = (document.title || '').trim() || (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 20);
+      let courseName = name;
+      try { courseName = (JSON.parse(sessionStorage.getItem('nc.ss.currentCourse') || 'null') || {}).name || name; } catch (_) { }
+      log('L2 本课程子课程已全部完成 ->', courseName);
+      ssMarkCourseDone(courseName);
+      this.__ssNavAt = now();
+      timers.push(setTimeout(() => { location.href = 'https://edu.shengshengketang.com/home'; }, 2500));
+      return true;
+    },
+    /** L3 课时跑完 → 回父级子课程列表 */
+    leaveSub() {
+      let back = null;
+      try { back = sessionStorage.getItem(SS_PARENT_KEY); } catch (_) { }
+      log('L3 本子课程课时全部完成 → 返回列表', back ? String(back).slice(0, 60) : '(无记录，回首页)');
+      this.__ssNavAt = now();
+      timers.push(setTimeout(() => { location.href = back || 'https://edu.shengshengketang.com/home'; }, 2500));
+      return true;
+    },
     async poll() {
       if (!CFG.enabled) return;
+      const lvl = ssLevel();
 
-      // 1) 弹题优先：随堂题弹窗会挡住播放器，必须先答掉，不能再去做别的动作
+      // L1 / L2：只做导航，导航后给页面时间加载
+      if (lvl === 1 || lvl === 2) {
+        if (this.__ssNavAt && now() - this.__ssNavAt < 8000) return;   // 刚点过，等加载
+        if (lvl === 1) {
+          const r = this.enterNextCourse();
+          if (r === null) { log('L1 两门课程均已完成'); markAllDone('本账号全部课程（基础理论 + 三级实务）已完成'); }
+          return;
+        }
+        if (lvl === 2) {
+          const r = this.enterNextSub();
+          if (r === null) this.leaveCourse();
+          return;
+        }
+      }
+      if (lvl !== 3) return;   // 其它页面不动
+
+      // L3：原逻辑（弹题优先 + 视频 + 自动进入未完成课时）
       const box = CFG.autoQuiz ? this.box() : null;
       if (box) {
         await this.answerQuiz(box).catch(err);
         return;
       }
-
-      // 2) 没有视频 → 进入未完成课时（重试逻辑内部自带节流）
       if (!pickVideo()) {
         await this.autoEnterLesson().catch(() => { });
         if (!pickVideo()) return;
@@ -878,19 +996,31 @@
   const DONE_KEY = 'netclass.done.' + PLATFORM;
   function readDone() { try { return JSON.parse(localStorage.getItem(DONE_KEY) || 'null'); } catch (_) { return null; } }
 
-  /** 明显的横幅提示（面板之外的独立元素，不容易被忽略） */
+  /** 明显的横幅提示（面板之外的独立元素，不容易被忽略）；带关闭按钮，可收起 */
   let bannerEl = null;
   function showBanner(html, tone) {
     try {
       if (bannerEl) bannerEl.remove();
       bannerEl = document.createElement('div');
       bannerEl.id = 'netclass-banner';
-      const bg = tone === 'done' ? 'linear-gradient(90deg,#0f5132,#1b7a4b)' : 'linear-gradient(90deg,#5a3a0a,#8a5a12)';
+      const bg = tone === 'done' ? 'linear-gradient(90deg,#0f5132,#1b7a4b)'
+        : tone === 'warn' ? 'linear-gradient(90deg,#5a3a0a,#8a5a12)'
+          : 'linear-gradient(90deg,#1e3a5f,#2b5286)';
       bannerEl.style.cssText = 'position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:2147483647;' +
         'font:14px/1.7 "Segoe UI",system-ui,"Microsoft YaHei",sans-serif;color:#fff;background:' + bg + ';' +
-        'padding:10px 22px;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.5);max-width:88vw;text-align:center;user-select:none';
-      bannerEl.innerHTML = html;
+        'padding:10px 40px 10px 22px;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.5);max-width:88vw;text-align:center;user-select:none';
+      bannerEl.innerHTML = html +
+        '<span id="netclass-banner-x" title="关闭" style="position:absolute;top:4px;right:8px;cursor:pointer;' +
+        'font-size:16px;line-height:1;opacity:.75;padding:2px 6px;border-radius:4px">✕</span>';
       (document.body || document.documentElement).appendChild(bannerEl);
+      const x = bannerEl.querySelector('#netclass-banner-x');
+      if (x) {
+        x.onmouseenter = () => { x.style.opacity = '1'; x.style.background = 'rgba(255,255,255,.18)'; };
+        x.onmouseleave = () => { x.style.opacity = '.75'; x.style.background = 'transparent'; };
+        x.onclick = () => hideBanner();
+      }
+      // 30 秒后自动收起（仍在面板上能看到状态）
+      timers.push(setTimeout(() => { if (bannerEl) hideBanner(); }, 30000));
     } catch (_) { }
   }
   function hideBanner() { try { if (bannerEl) { bannerEl.remove(); bannerEl = null; } } catch (_) { } }
