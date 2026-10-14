@@ -8,3 +8,8 @@ ssjs/
 
 node_modules/
 *.log
+
+# 凭据：绝不入库（DeepSeek key 只存在笔记本本地的 chrome.storage.local）
+*.key
+secrets.json
+.env

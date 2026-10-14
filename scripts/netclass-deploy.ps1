@@ -30,6 +30,7 @@ $SshOpts = @(
   '-i', $Key
 )
 $RemoteRoot = 'C:\Users\WJX\AppData\Local\TaskMesh\netclass'
+$ExtRoot = 'C:\Users\WJX\AppData\Roaming\OCS Desktop\downloads\extensions\netclass-loader'
 $Ssh = 'C:\Windows\System32\OpenSSH\ssh.exe'
 $Scp = 'C:\Windows\System32\OpenSSH\scp.exe'
 
@@ -47,9 +48,13 @@ switch ($Action) {
     $pairs = @(
       "$Repo\scripts\netclass-server.ps1|$RemoteRoot\server.ps1",
       "$Repo\userscript\App.js|$RemoteRoot\App.js",
-      "$Repo\dist\netclass.user.js|$RemoteRoot\netclass.user.js"
+      "$Repo\dist\netclass.user.js|$RemoteRoot\netclass.user.js",
+      # 加载器扩展本体（改 background.js / manifest.json 后必须再跑 loader-reload.mjs）
+      "$Repo\loader-ext\background.js|$ExtRoot\background.js",
+      "$Repo\loader-ext\bundled.js|$ExtRoot\bundled.js",
+      "$Repo\loader-ext\manifest.json|$ExtRoot\manifest.json"
     )
-    Invoke-RemotePs "New-Item -ItemType Directory -Force -Path '$RemoteRoot','$RemoteRoot\logs' | Out-Null; 'ok'"
+    Invoke-RemotePs "New-Item -ItemType Directory -Force -Path '$RemoteRoot','$RemoteRoot\logs','$ExtRoot' | Out-Null; 'ok'"
     foreach ($pair in $pairs) {
       $local = $pair.Split('|')[0]
       $remote = $pair.Split('|')[1]
