@@ -3,7 +3,7 @@
 > 面向接手这套代码的人。README 讲「这是什么」，本文档讲**「怎么接着干活」**：
 > 架构、代码地图、部署、排障手册、以及**每个坑的成因**（最有价值的部分）。
 >
-> 最后更新：2026-10-14 · HEAD `2f64ea5` · 21 个提交
+> 最后更新：2026-10-14（随代码同 PR 更新；完整病历见 `git log`）
 
 ---
 
@@ -116,7 +116,8 @@ L1 挑未做过的课 → L2 挑未完成的子课程 → L3 处理课时。
 **日常必用**
 | 脚本 | 用途 |
 |---|---|
-| `nc.mjs` | 远程执行总入口。`run --file/--script` 在笔记本跑 PS；`eval --port --target --expr` 在页面里跑 JS；`new/tabs` 管标签页 |
+| `status.mjs` | **一条命令看全貌**：隧道/CDP、两站页面状态（模块版本/开关/视频/弹题）、窗口布局、加载器去重签名、笔记本侧进程与服务与计划任务；有告警时退出码 1。加 `--no-ssh` 可跳过笔记本侧 |
+| `nc.mjs` | 远程执行总入口。`run --file/--script [--args '-Apply']` 在笔记本跑 PS；`eval --port --target --expr` 在页面里跑 JS；`new/tabs` 管标签页 |
 | `build.mjs` / `build-loader.mjs` | 构建两个产物 |
 | `tile.mjs` / `tile-verify.mjs` | 左右半屏平铺 / 复核窗口与页面状态 |
 | `probe-page.mjs` | 通用页面探针（视频状态、模块状态、弹题计数） |
@@ -156,8 +157,9 @@ L1 挑未做过的课 → L2 挑未完成的子课程 → L3 处理课时。
 
 | 子目录 | 内容 |
 |---|---|
-| `remote/` | 在笔记本上执行的 PowerShell 脚本（**必须纯 ASCII**，见 §5.10） |
-| `laptop-runtime/` `ssjs/` `qy/` | 历史抓取样本与证据 |
+| `remote/` | 在笔记本上执行的 PowerShell 脚本（**新脚本必须纯 ASCII**，见 §5.10）。2026-10-14 起**已纳入版本控制**（此前只存在于本地快照） |
+| `laptop-runtime/` `ssjs/` `qy/` | 站点采样与运行时转储（第三方代码、体积大、可重抓）→ **不入库**；说明与重抓方法见 `runs/README.md` |
+| 顶层 `panel-shot.png` / `tm-install-payload.json` / `tm-storage-analysis.md` | 截图证据 / 脚本依赖的数据 / 静态分析 → 入库 |
 
 ---
 
@@ -184,6 +186,28 @@ node scripts/loader-inject-test.mjs 9224
 ```
 
 `scripts/deploy.mjs` 封装了上面大部分步骤。
+
+### 3.5 部署一致性核对（改完代码「不生效」时先做这个）
+
+远端跑的东西和仓库里的产物**必须逐字节一致**，否则你在改一份没人执行的代码。核对方法：
+
+```powershell
+# ① 本地哈希
+Get-FileHash loader-ext\background.js, loader-ext\bundled.js, loader-ext\manifest.json, dist\netclass.user.js, userscript\App.js -Algorithm SHA256
+# ② 远端哈希（扩展目录 + %LOCALAPPDATA%\TaskMesh\netclass  + 17800 实际服务的那份）
+node scripts\nc.mjs run --file <列目录并 Get-FileHash 的脚本>
+```
+
+判据（2026-10-14 实测通过的状态）：
+
+| 文件 | 远端位置 |
+|---|---|
+| `loader-ext/{background.js,bundled.js,manifest.json}` | `%APPDATA%\OCS Desktop\downloads\extensions\netclass-loader\` |
+| `userscript/App.js` | `%LOCALAPPDATA%\TaskMesh\netclass\App.js` |
+| `dist/netclass.user.js` | `%LOCALAPPDATA%\TaskMesh\netclass\netclass.user.js`，并且 **17800 的 `/netclass.user.js` 必须与它同哈希**（加载器注册的就是这份） |
+
+顺带一条：`dist` 产物是可复现的——重跑 `build.mjs` + `build-loader.mjs` 后 `git status` 应保持干净；
+不干净说明有源码没被构建进去。
 
 ### 3.2 SSH 连接参数
 
@@ -247,12 +271,15 @@ node scripts/loader-inject-test.mjs 9224
 
 | 症状 | 先看什么 |
 |---|---|
+| **想知道现在什么状态（先跑这个）** | `node scripts/status.mjs` —— 一屏给出隧道、两站页面、窗口、加载器、笔记本侧与告警 |
 | 页面完全没反应 | `loader-log.mjs`（有没有 `registered`）+ `probe-page.mjs`（`module` 是否 true） |
 | 视频不动 | `probe-page.mjs`（`readyState`/`duration`）+ `ss-logs.mjs`（有无报错） |
 | 卡在某一课 | `ss-logs.mjs` 看有无「卡在结尾」「尚未被站点确认完成」 |
 | 窗口不见 | `win-titles.mjs` + `status-check.ps1`（session 1 才有窗口） |
 | 页面反复刷新 | `nav-trace.mjs`（看导航序列） |
 | 弹题不答 | `quiz-state.mjs`（看是哪种状态）+ `ss-logs.mjs` |
+| 加载器日志每 60s 一条 `registered` / 模块反复重启 | `status.mjs` 会直接点名「重复注册」；根因与修法见 §5.21 |
+| 改完代码不生效 | 先核对部署一致性（§3.5）：`nc.mjs run --file <哈希脚本>` 比对远端与本地 SHA-256 |
 | 倍速不对 | `measure.mjs`（实测速度，别信 `playbackRate` 属性） |
 | 站点改了 | `ss-structure.mjs` / `ss-home.mjs` 重新摸 DOM |
 
@@ -314,7 +341,10 @@ node scripts/loader-inject-test.mjs 9224
 ### 5.10 PS 脚本报语法错误
 **症状**：`Missing closing '}'`。
 **根因**：脚本里的**中文注释经传输被打乱**，破坏了语法。
-**修法**：`runs/remote/*.ps1` **全部纯 ASCII**（提交前校验 `non-ascii bytes = 0`）。`4d6a514`
+**修法**：`runs/remote/*.ps1` **新脚本一律纯 ASCII**（提交前校验 `non-ascii bytes = 0`）。`4d6a514`
+**更正（2026-10-14 实测）**：历史脚本里**只有 22/68 个是纯 ASCII**，其余 46 个含非 ASCII（其中 36 个的非 ASCII 落在代码行）——
+所以这条规则此前被写成了「全部已纯 ASCII」，与实际不符。现状是「没炸」而不是「已清干净」：
+凡是改到某个远程脚本，顺手把它的非 ASCII 清掉（`status-check.ps1:10` 就是残留例子）。
 
 ### 5.11 弹窗卡在「回答错误」页
 **症状**：弹窗停在「回答错误 / 正确答案：B / [再试一次][跳过]」，既不提交也不关闭，挡住播放器。
@@ -376,6 +406,19 @@ node scripts/loader-inject-test.mjs 9224
 **症状**：跑完「心理学导论」就宣告全部完成并暂停，但账号下还有 12 个子课程、另一门课。
 **根因**：脚本只在第三层循环，层级概念缺失。
 **修法**：`ssLevel()` 三层分派 + 逐级回退（见 §1.3）。`2f64ea5`
+
+### 5.21 去重「修好了」但只在一半配置上生效（加载器每 60s 重复注册）
+**症状**：`loader-tail.mjs` 看某个 profile 的日志环，`registered remote ... build=xxxx` 每 60 秒一条，
+页面模块反复重启（弹题要等好几分钟才答）；另一个 profile 却完全正常——**同一个扩展、同一份代码**。
+**根因**：写入顺序。`register()` 里先落 `lastSource/lastAt/lastLen/lastBuildId`，
+而 `lastSig` 是在 `register()` **返回之后**才写的（`background.js:143`），中间隔着
+`injectIntoOpenTabs()` 一串 await。MV3 的 Service Worker 会在这个空档被回收：
+**存储里其它四个键都在、唯独缺 `lastSig`**，下一个 alarm 读不到签名 → 再次注册 → 无限循环。
+（2026-10-14 实测：qiyang 配置刷了一整晚 60 次，shengsheng 配置因为有早先写成功的一条而幸免。）
+**修法**：把 `lastSig` 并进 `register()` 里紧跟 `userScripts.register()` 的那次 `storage.local.set`
+（见 `loader-ext/background.js` 注释）；同时把 alarm 周期从 1 分钟改回 2 分钟，与本文档/README 对齐。
+**识别手段**：`node scripts/status.mjs` 会直接报「重复注册」（判据：`lastSig` 缺失 + 日志里 ≥2 次 `registered`）。
+**注意**：改完 `background.js` 必须重载扩展（§5.5），否则跑的还是缓存里的旧代码。
 
 ---
 
@@ -454,8 +497,15 @@ POST /api/exam/popQuiz/insertUserAnswer                           作答（回�
 4. **直播课不处理**（qiyang 36 个）。
 5. **窗口归属**：当前浏览器由计划任务在登录会话里启动（可见），OCS 面板显示为未运行。
    要让 OCS 托管：关掉窗口，在 OCS 点「运行」。
-6. **历史残留计划任务**可清理：`NetClassFreshTM` / `NetClassMatrix` / `NetClassProbe1-4`。
-7. **README 部分内容已过时**（仍写 shengsheng 1.00x、缺后面 10 来个修复）。
+6. **历史残留计划任务**：`NetClassProbe*` / `NetClassUIA*` / `NetClassFreshTM` / `NetClassMatrix` /
+   `NetClassTestNoExcept` 共 15 个已于 2026-10-14 清理，清理脚本固化在
+   `runs/remote/cleanup-residue-tasks.ps1`（默认 dry run，`--args '-Apply'` 才真删；
+   不碰 `NetClassVis-*`、`NetClassServer` 与任何 `TaskMesh-*`）。
+   笔记本上 `TaskMesh-*` 侧仍有若干残留任务（`TaskMesh-Learning-Probe-*` 等），**属另一个项目，未处理**。
+7. **webtrn 配置没开扩展开发者模式**：9226 那个 profile 的加载器日志是
+   `'userScripts' API is only available for users in developer mode`，注册必失败；当前 `MATCHES`
+   只有两个课程域，所以不影响现状。要在 webtrn 上跑脚本，先用 `ensure-devmode.mjs` 给它开。
+8. **README 部分内容已过时**（仍写 shengsheng 1.00x、缺后面 10 来个修复）。
    以本文档和 `git log` 为准。
 
 ---

@@ -62,7 +62,7 @@ xgplayer / Aliplayer 走 MSE，装载期间对 `<video>` 动手会让播放器�
 | 用户脚本宿主 | Tampermonkey **5.4.0**（未打包扩展，OCS 用 `--load-extension` 加载；OCS 启动时自动开扩展开发者模式） |
 | 课程 A（shengsheng） | `https://edu.shengshengketang.com/course/v2/1955104870025424897` 心理学导论；profile `b33d3127…`（= OCS 里的「知道1」） |
 | 课程 B（qiyang） | `https://study.bjqiyang.com/agent/Goods/index?goods_id=46789&store_id=1` 三级实务观摩课程；profile `3a6e9e38…`（=「知道2」） |
-| 账号 | 两站均 `15005243592`（shengsheng: 密码可登录；qiyang: 判题接口已登录态） |
+| 账号 | 两站同一手机号账号（真实号码不出现在仓库里；凭据只留在笔记本本地） |
 
 ### 1.2 关于「万能脚本 451356」的核查结论（为什么不用它）
 
@@ -134,6 +134,7 @@ netclass-20261013/
 │  ├─ ocs-register.mjs            把脚本注册进 OCS 脚本列表（备用通道）
 │  ├─ ensure-devmode.mjs          开扩展开发者模式（诊断用）
 │  ├─ nc.mjs                      PC 侧控制台：up/tabs/new/eval/run/watch/probe
+│  ├─ status.mjs                  一条命令监控总览（隧道/页面/窗口/加载器/笔记本侧）
 │  ├─ tunnel.ps1                  SSH 端口转发（CDP 用）
 │  ├─ netclass-server.ps1         笔记本本机服务（17800）：提供最新脚本 + 回传
 │  ├─ netclass-deploy.ps1         上传/启停本机服务
@@ -174,6 +175,7 @@ node scripts\nc.mjs run --file runs\remote\launch-loader.ps1
 ### 3.3 观察与验证
 
 ```powershell
+node scripts\status.mjs                              # ★ 一条命令看全貌（有告警时退出码 1）
 node scripts\probe-page.mjs 9224 shengshengketang    # 视频/脚本状态
 node scripts\probe-page.mjs 9225 bjqiyang
 node scripts\measure.mjs --port 9224 --target shengshengketang --secs 15   # 实测倍速
@@ -271,3 +273,8 @@ await chrome.userScripts.register([{
    待再遇到新弹题时确认计分。
 5. **窗口归属**：当前两台浏览器由计划任务在登录会话里启动（可见），OCS 面板显示为未运行。
    若要让 OCS 托管：关掉窗口，在 OCS 点「运行」即可（扩展会自动加载，脚本自动注册并运行）。
+6. **webtrn（9226）配置没开扩展开发者模式**：那个 profile 里 `chrome.userScripts` 不可用，
+   加载器注册必失败（日志：`only available for users in developer mode`）。当前不影响两门课，
+   要在 webtrn 上跑脚本先用 `scripts/ensure-devmode.mjs` 给它开。
+7. **加载器去重已在 2026-10-14 修好**（`lastSig` 写入时机 + 扫描周期回到 2 分钟）；
+   以后遇到「日志每 60s 一条 registered」直接跑 `node scripts/status.mjs`，它会点名。
