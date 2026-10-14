@@ -1271,7 +1271,70 @@
       hit.click();
       log('webtrn 已点击', label);
       return { clicked: label };
-    }
+    },
+
+    // ---- 通用页面操作原语（订单流程通用：任何页面都能读/点/填/选/提交）-------------
+    /** 这页是什么、能做什么：标题/URL/可点控件/输入框/上传位/tab */
+    pageInfo() {
+      const vis = el => !!(el.offsetWidth || el.offsetHeight || (el.getClientRects && el.getClientRects().length));
+      const txt = e => (e.value || e.innerText || '').replace(/\s+/g, ' ').trim();
+      return {
+        title: document.title,
+        url: location.href.slice(0, 130),
+        controls: Array.from(document.querySelectorAll('a,input[type=button],input[type=submit],button'))
+          .filter(vis).map(b => ({ t: txt(b).slice(0, 18), id: b.id || '', cls: String(b.className || '').slice(0, 22), onclick: (b.getAttribute('onclick') || '').slice(0, 70) }))
+          .filter(x => x.t).slice(0, 40),
+        inputs: Array.from(document.querySelectorAll('input[type=text],input[type=password],textarea,select'))
+          .filter(vis).map(i => ({ tag: i.tagName, id: i.id || '', name: String(i.name || '').slice(0, 40), val: String(i.value || '').slice(0, 30) })).slice(0, 30),
+        fileInputs: Array.from(document.querySelectorAll('input[type=file]')).map((f, i) => ({ i, id: f.id || '', visible: vis(f) })),
+        tabs: Array.from(document.querySelectorAll('[onclick*=setTab],[onclick*=Tab],[class*=tab]'))
+          .map(e => txt(e).slice(0, 24)).filter(Boolean).slice(0, 14)
+      };
+    },
+    /** 按文字点（精确优先、包含兜底；可选 nth / visible:false / maxLen） */
+    clickText(text, opts) {
+      const o = opts || {};
+      const vis = el => !!(el.offsetWidth || el.offsetHeight);
+      const norm = e => (e.value || e.innerText || '').replace(/\s+/g, ' ').trim();
+      const all = Array.from(document.querySelectorAll('a,input[type=button],input[type=submit],button,li,span,div,td'))
+        .filter(e => (o.visible === false ? true : vis(e)));
+      let hits = all.filter(e => norm(e) === text);
+      if (!hits.length) hits = all.filter(e => { const t = norm(e); return t.indexOf(text) >= 0 && t.length < (o.maxLen || 40); });
+      if (!hits.length) throw new Error('点不到：' + text);
+      const el = hits[o.nth || 0] || hits[0];
+      const info = { tag: el.tagName, cls: String(el.className || '').slice(0, 30), onclick: (el.getAttribute('onclick') || '').slice(0, 80) };
+      try { el.click(); } catch (_) { }
+      log('webtrn 点击', text, info.tag);
+      return { clicked: info, candidates: hits.length };
+    },
+    /** 赋值（含隐藏域）+ 触发 input/change */
+    setValue(sel, value) {
+      const el = document.querySelector(sel);
+      if (!el) throw new Error('没有元素：' + sel);
+      el.value = String(value == null ? '' : value);
+      try { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) { }
+      return { sel, len: el.value.length };
+    },
+    /** 选下拉：按 value 或按文字 */
+    setSelect(sel, want) {
+      const el = document.querySelector(sel);
+      if (!el) throw new Error('没有 select：' + sel);
+      const w = String(want);
+      let opt = Array.from(el.options).find(o => o.value === w);
+      if (!opt) opt = Array.from(el.options).find(o => (o.text || '').trim() === w);
+      if (!opt) opt = Array.from(el.options).find(o => (o.text || '').indexOf(w) >= 0);
+      if (!opt) throw new Error('下拉里没有：' + want);
+      el.value = opt.value;
+      try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) { }
+      return { sel, picked: opt.text || opt.value };
+    },
+    /** 提交类按钮候选（含隐藏按钮，供"看得见的点不动"时兜底） */
+    submitCandidates() {
+      const txt = e => (e.value || e.innerText || '').replace(/\s+/g, ' ').trim();
+      return Array.from(document.querySelectorAll('a,input[type=button],input[type=submit],button'))
+        .filter(b => /保存|提交|发表|确定|完成上传|上传|发布/.test(txt(b)))
+        .map(b => ({ t: txt(b).slice(0, 12), visible: !!(b.offsetWidth || b.offsetHeight), onclick: (b.getAttribute('onclick') || '').slice(0, 70) }));
+    },
   };
 
   const P_ADAPTER = PLATFORM === 'shengsheng' ? ADAPTER_SHENGSHENG

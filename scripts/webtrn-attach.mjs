@@ -65,6 +65,17 @@ if (Number(idx) < 0) { console.log('没找到匹配 "' + A.near + '" 的上传�
 console.log('目标上传区序号: ' + idx);
 
 // 取隐藏 file input 的 remote object，再交给 DOM.setFileInputFiles
+// ★ 顺序很重要：uploadify 只认自己的 onSelect 流程 —— 必须先点「上传我的资源」再塞文件，
+//   并且塞完补发 input/change 事件，否则不会发起分片上传（实测：只 setFileInputFiles 时进度恒为 0）
+const opened = await evalJs(`(function(){
+  var a = document.querySelectorAll('.act_uploadArea')[${idx}];
+  var btn = Array.from(a.querySelectorAll('a,input,button')).find(function(b){ return /上传我的资源|继续添加/.test(b.value||b.innerText||''); });
+  if (!btn) return 'no-upload-button';
+  btn.click(); return 'clicked';
+})()`);
+console.log('触发上传入口: ' + opened);
+await new Promise(r => setTimeout(r, 1200));
+
 const obj = await send('Runtime.evaluate', {
   expression: `document.querySelectorAll('.act_uploadArea')[${idx}].querySelector('input[type=file]')`,
   returnByValue: false
@@ -73,6 +84,12 @@ const objectId = obj.result.objectId;
 if (!objectId) { console.log('该上传区没有 file input'); ws.close(); process.exit(1); }
 await send('DOM.setFileInputFiles', { files: [String(A.file)], objectId });
 console.log('已塞入文件: ' + A.file);
+const ev = await evalJs(`(function(){
+  var inp = document.querySelectorAll('.act_uploadArea')[${idx}].querySelector('input[type=file]');
+  try { inp.dispatchEvent(new Event('input', {bubbles:true})); inp.dispatchEvent(new Event('change', {bubbles:true})); } catch(e){ return 'ERR '+e.message; }
+  return 'events-dispatched';
+})()`);
+console.log('事件补发: ' + ev);
 
 for (let i = 1; i <= 10; i++) {
   await new Promise(r => setTimeout(r, 3000));

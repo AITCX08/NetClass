@@ -495,6 +495,34 @@ w.setTimeout(function(){ btn.click(); }, 30);   // 求值立刻返回，提交�
 （控制台每几秒一条 `ERR_FAILED`），最后回退到内置 stub。不影响加载器注入的模块，但噪音很大；
 要干净就把 OCS 脚本列表里 webtrn 那条停用。
 
+### 5.26 webtrn 资源保存的真实字段与三条校验（2026-10-14 续查）
+把 §5.25 的断点又推进一步，**记录已确认的事实**（下次从这里接着做，不要再从头猜）：
+
+1. **平台限制每个活动项最多 1 份资源**。多传了不会报错，保存时弹 `提示 × 最多上传1个资源！`
+   —— 上传前先点掉多余暂存行（`div.a_u_row0.res_<itemId>_o_<uploadId>` 里的「取消」）。
+2. **保存校验读的是表单字段，不是列表行字段**：
+   - 列表行（上传行自己的属性）：`select[name=subject_<itemId>]` / `stage_` / `type_`、`input[name=title_<itemId>]`
+   - **保存真正读的**：`#resourceSubject_<itemId>`(`bean.peSubject.id`)、`#resourceStage_<itemId>`(`bean.peStage.id`)、
+     `#resourceType_<itemId>`(`bean.enumConstByFlagResourceType.code`)、`#resourceTitle_<itemId>`(`bean.name`)、`#des_<itemId>`(`bean.intro`)
+   - 学科/学段要填**选项 value**（形如 `8a85829983605d3c01836335a9`），类别填 code（研修作业=4），标题填文字。
+3. **直接给 `bean.*` 赋值会被 UI 重置**（实测：刚写完 `resourceSubject_` 有值，保存前再查就空了），
+   正确路径是**先打开该行的「属性」面板**（面板里是可见表单），在面板上填、用面板的「保存」提交。
+   `showResource(themeId,count,flag,myResourceCount,myResource,themeType,ifStuUpload)` 是资源列表渲染函数，
+   **不能只传 themeId 当"打开面板"用**（实测只传一个参数只会重渲染出空列表）。
+4. 校验顺序（逐个出现，逐个补）：`请选择学科！` → `请选择学段！` → … → `标题不能为空！`
+   —— 看到哪个提示就说明前一个字段已过，**按提示顺序补即可定位缺哪个字段**。
+5. 上传本身没问题：`DOM.setFileInputFiles` **必须先点「上传我的资源」再塞**，塞完补发 input/change，
+   否则 uploadify 不触发（进度恒 0）。成功时出现暂存行 `... 100% 取消`，云盘端点
+   `200 https://yunpan.sdk.webtrn.cn/api/chunkupload`。
+
+### 5.27 学习平台（zjdx-kfkc）的 SSO 入口必须带全参数
+「查看作业」按钮的链接是拼出来的：
+`https://zjdx-kfkc.webtrn.cn/learnspace/sign/signLearn.action?courseId=<课>&loginType=true&loginId=<学号>&sign=3&siteCode=zjdx&domain=<协议+主站域名>&classId=<班级>`
+**少传 `domain` / `classId` 会让该页主线程直接卡死**（实测：无对话框、无网络活动、连 `Page.captureScreenshot` 都失败，
+只能关标签重开）。带上完整参数后会正常 302 到
+`/learnspace/learn/homework/blue/student/homework_index.action?...` —— 作业在那边交。
+作业形态：`homework_doing.action?params.itemId=<id>`，「以附件形式上传」，有 `保存草稿` 与 `提交`（提交后不可改）。
+
 ---
 
 ## 6. 站点事实速查
