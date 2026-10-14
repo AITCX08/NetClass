@@ -89,7 +89,7 @@ async function checkPort({ port, name }) {
 
   const list = await j(`http://127.0.0.1:${port}/json/list`);
   const pages = list.filter(t => t.type === 'page' && !/^(devtools|chrome|chrome-extension):/.test(t.url));
-  const course = pages.find(p => /shengshengketang|bjqiyang/.test(p.url));
+  const course = pages.find(p => /shengshengketang|bjqiyang|webtrn\.cn/.test(p.url));
 
   if (course) {
     try {
@@ -117,8 +117,8 @@ async function checkPort({ port, name }) {
 
   const sw = list.find(t => t.type === 'service_worker' && t.url.includes(LOADER_ID));
   if (!sw) {
-    if (port !== 9226) warn(`${port} ${name}: 加载器 Service Worker 未运行`);
-    out.loader = { sw: false };
+    // MV3 的 SW 会被回收 —— 休眠是常态，只要页面里有模块就不算故障（页面缺模块另有告警）
+    out.loader = { sw: false, asleep: true };
   } else {
     try {
       const c2 = new Cdp(sw.webSocketDebuggerUrl);
@@ -216,7 +216,7 @@ for (const s of states) {
 console.log('\n== 加载器 ==');
 for (const s of states) {
   const l = s.loader || {};
-  if (!l.sw) { console.log(`  ${s.port} ${s.name.padEnd(10)} SW 未运行`); continue; }
+  if (!l.sw) { console.log(`  ${s.port} ${s.name.padEnd(10)} SW 休眠（MV3 正常，下次 alarm/导航会自唤起）${l.err ? ' | err ' + l.err : ''}`); continue; }
   const verdict = l.looping ? '⚠ 重复注册' : (l.lastSig ? '去重生效' : '无签名（首轮）');
   console.log(line(
     `  ${s.port} ${s.name.padEnd(10)}`,

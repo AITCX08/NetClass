@@ -14,7 +14,8 @@
 const SCRIPT_ID = 'netclass-user-script';
 const MATCHES = [
   'https://edu.shengshengketang.com/*',
-  'https://study.bjqiyang.com/*'
+  'https://study.bjqiyang.com/*',
+  'https://tea.webtrn.cn/*'      // 教师培训：目前只读监看（研修活动/作业的正文与提交另行授权）
 ];
 const CODE_URL = 'http://127.0.0.1:17800/netclass.user.js';
 

@@ -16,7 +16,9 @@
   const NS = '[NetClass]';
   const HOST = location.hostname;
   const PLATFORM = /shengshengketang/i.test(HOST) ? 'shengsheng'
-    : /bjqiyang/i.test(HOST) ? 'qiyang' : 'unknown';
+    : /bjqiyang/i.test(HOST) ? 'qiyang'
+      : /webtrn\.cn/i.test(HOST) ? 'webtrn' : 'unknown';
+  const PLATFORM_LABEL = { shengsheng: '心理学导论', qiyang: '职业培训', webtrn: '教师培训', unknown: '未知平台' }[PLATFORM];
   const log = (...a) => console.log(NS, ...a);
   const warn = (...a) => console.warn(NS, ...a);
   const now = () => Date.now();
@@ -1084,7 +1086,59 @@
     }
   };
 
-  const P_ADAPTER = PLATFORM === 'shengsheng' ? ADAPTER_SHENGSHENG : PLATFORM === 'qiyang' ? ADAPTER_QIYANG : null;
+  // ------------------------------------------------------------ webtrn（教师培训：只读监看）
+  /**
+   * tea.webtrn.cn 上的活是「研修活动（发帖/回帖）」和「研修作业（含论文）」，
+   * 交付物是**内容**——由订单流程里的 course-order-desk 写、paperwriter-api 生成论文，
+   * 本模块不自动填写/提交（这类动作需要订单方显式授权，且平台有验证码/人脸等人工闸门）。
+   *
+   * 所以这个适配器只做**只读识别与报告**，给订单处理提供现场事实：
+   * 当前是哪种页面、有哪些活动项（研讨类/上传类）、编辑器与上传控件是否就位、讨论区 iframe。
+   * 2026-10-14 实测结构见 docs 交接文档「站点速查」。
+   */
+  const ADAPTER_WEBTRN = {
+    id: 'webtrn',
+    pageKind() {
+      const p = location.pathname + location.search;
+      if (/activity_view\.jsp/i.test(p)) return 'activity';
+      if (/student_homework_list|homework_list|homework/i.test(p)) return 'homework';
+      if (/\/taolun\//i.test(p)) return 'discuss';
+      if (/\/cms\//i.test(p)) return 'home';
+      return 'other';
+    },
+    activityItems() {
+      const out = [];
+      document.querySelectorAll('a[onclick*=setTab], li[onclick*=setTab]').forEach((el, i) => {
+        const name = String(el.innerText || '').replace(/\s+/g, ' ').trim();
+        if (!name) return;
+        out.push({ idx: i + 1, name: name.slice(0, 40), kind: /研讨|讨论|交流|评论/.test(name) ? 'discuss' : 'upload' });
+      });
+      return out;
+    },
+    controls() {
+      const frames = Array.from(document.querySelectorAll('iframe'))
+        .filter(f => /taolun|courseTopic/i.test(f.src || ''));
+      return {
+        fileInputs: document.querySelectorAll('input[type=file]').length,
+        editors: document.querySelectorAll('textarea,[contenteditable="true"]').length,
+        discussFrames: frames.length,
+        loginForm: !!document.querySelector('#loginId, #passwd')
+      };
+    },
+    player() { return null; },
+    onResponse() { },
+    resetRound() { },
+    async poll() {
+      const kind = this.pageKind();
+      state.webtrn = { kind, items: kind === 'activity' ? this.activityItems() : [], controls: this.controls(), at: now() };
+      // 约每 1 分钟记一条，别刷屏
+      if (state.loopTicks % 20 === 1) log('webtrn 监看', kind, JSON.stringify(state.webtrn.controls));
+    }
+  };
+
+  const P_ADAPTER = PLATFORM === 'shengsheng' ? ADAPTER_SHENGSHENG
+    : PLATFORM === 'qiyang' ? ADAPTER_QIYANG
+      : PLATFORM === 'webtrn' ? ADAPTER_WEBTRN : null;
 
   // ------------------------------------------------------------ 收工：全部刷完
   const DONE_KEY = 'netclass.done.' + PLATFORM;
