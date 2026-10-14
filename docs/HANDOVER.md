@@ -665,3 +665,12 @@ POST /api/exam/popQuiz/insertUserAnswer                           作答（回�
 - 工具：
 ode scripts/ss-multi-state.mjs 9224（多页状态）、
 ode scripts/ss-parallel-speed.mjs 9224 40（并行+倍速实测）。
+
+### 5.32 并行能力自动探测工具（配合多账号/多课程排班）
+
+ode scripts/parallel-probe.mjs --port <端口> [--max 3] [--secs 20] [--open <课程URL>]
+逐档 N=1,2,3… 压测：每页记录 currentTime → 等 --secs → 再读，算「视频推进/墙钟」的实测倍速；
+任一页 < 标称×0.8 就退回上一档，结论写 uns/parallel-probe-<port>.json 的 max_parallel。
+默认只复用已开页面（--open 才新开标签，新开会额外占带宽）。
+实测（shengsheng 2026-10-14）：**2 路都稳在 1.5x，且后台标签（visibilityState=hidden）不被节流** —— 
+说明可以放心多开课程页并行推进，倍速上限仍是 1.5x（见 §5.31）。
