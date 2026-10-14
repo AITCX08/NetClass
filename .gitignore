@@ -1,4 +1,10 @@
-runs/
+# 运行与采样产物：体积大、可重新抓取，不入库（详见 runs/README.md）
+runs/ssjs/
+runs/laptop-runtime/
+runs/qy/
+runs/ss-home.html
+runs/ss-index.js
 ssjs/
+
 node_modules/
 *.log
