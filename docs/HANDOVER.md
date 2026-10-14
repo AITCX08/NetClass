@@ -450,6 +450,43 @@ node scripts\nc.mjs run --file <列目录并 Get-FileHash 的脚本>
 `status`（看是否已配置，掩码显示）、`test`（走 SW 直连打一发，验证 key 与网络）。
 换 key 后**不用**改任何文件，重新 `set` 一次即可（签名里带了 key 指纹，会自动重新下发）。
 
+### 5.23 点一次「发表」把整个标签卡死（同步 XHR）
+**症状**：`nc.mjs eval` 调 `NetClass.webtrn.reply(...)` 之后，CDP `Runtime.evaluate` 全部超时；
+用另一个标签看，**回帖并没有落库**（「我的回帖(9条)」没变），而那个标签的 JS 线程一直是忙的。
+`Page.handleJavaScriptDialog` 报 `No dialog is showing` —— 不是原生弹窗。
+**根因**：站点的提交处理里有**同步 XHR**（`checkAndSaveReply` → 同步提交）。
+同步请求会把渲染进程的主线程占住，于是调用方（我们的 `Runtime.evaluate`）一起被拖死。
+**修法**：**异步点击** ——
+```js
+w.setTimeout(function(){ btn.click(); }, 30);   // 求值立刻返回，提交在下一个任务里跑
+```
+提交结果改用**轮询**判定（`NetClass.webtrn.check(idx)` 看计数/正文），不要指望点击同步返回（实测 4 秒内落库）。
+**救活卡死的标签**：`Page.navigate({url: 原 URL})`（浏览器进程处理，卡死的渲染进程会被换掉）。
+**顺带**：`autoConfirm(true)` 把 `confirm` 换成恒真、`alert` 只记日志（顶层 + 各讨论区 iframe 都装）——
+这个站点的保存/提交路径会弹确认框，不接管就会卡在对话框上（同样是主线程忙）。
+
+### 5.24 回帖按钮的匹配规则（第一次写错的地方）
+`checkAndSaveReply(a, b)` 的 **第一个参数是"帖子 id 本身"**，不是回复框的 id：
+回复框叫 `replyContent_<postId>`，而按钮 onclick 里写的是 `<postId>`。
+同一个按钮**兼"展开回复框"和"提交"两用**：框里没内容就展开、有内容就提交 —— 所以必须**先填值再点**。
+（2026-10-14 实测：按 `replyContent_` 去匹配按钮会一个都找不到。）
+**验证回帖是否真落库**：别只看计数（「我的回帖(N条)」刷新才更新），要查**渲染出来的楼层**——
+在非输入框元素里搜回复里的特征串，能搜到且带 `2026.10.14 13:50 <姓名>` 这样的时间戳才算成功。
+
+### 5.25 webtrn 作业上传的链路与断点
+**已打通**：`scripts/webtrn-attach.mjs` 用 CDP `DOM.setFileInputFiles` 把文件塞进
+`.act_uploadArea` 里那个**隐藏的 uploadify input**（id 随机，如 `html5_1k4sf8u3t1csf1cn122tgb1ae23`）。
+实测文件确实分片上传成功：`200 https://yunpan.sdk.webtrn.cn/api/chunkupload`，界面进度 100%。
+**注意**：webtrn 的上传区在**笔记本**上跑，所以 `--file` 必须是笔记本本地绝对路径
+（先 `scp` 推上去；`orders/` 目录要自己建）。
+**还差最后一步**：上传完成后资源处于"待补元数据"状态，
+「属性 → 学科/学段/类别/标题/简介 → 保存」这块面板是**隐藏容器**（`offsetParent === null`），
+直接找可见输入框会一无所获 —— 需要先触发展开（按钮不是 `a[value=属性]` 这种直白形态，得继续逆 uploadify 那套 DOM），
+补完并保存后「已有 N 份资源上传成功」才会 +1。
+**顺带**：webtrn 上**油猴也装了同名壳**，它会去 fetch `http://127.0.0.1:17800/App.js` 并被 CORS 拦掉
+（控制台每几秒一条 `ERR_FAILED`），最后回退到内置 stub。不影响加载器注入的模块，但噪音很大；
+要干净就把 OCS 脚本列表里 webtrn 那条停用。
+
 ---
 
 ## 6. 站点事实速查

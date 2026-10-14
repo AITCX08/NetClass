@@ -1086,15 +1086,18 @@
     }
   };
 
-  // ------------------------------------------------------------ webtrn（教师培训：只读监看）
+  // ------------------------------------------------------------ webtrn（教师培训：监看 + 写路径）
   /**
-   * tea.webtrn.cn 上的活是「研修活动（发帖/回帖）」和「研修作业（含论文）」，
-   * 交付物是**内容**——由订单流程里的 course-order-desk 写、paperwriter-api 生成论文，
-   * 本模块不自动填写/提交（这类动作需要订单方显式授权，且平台有验证码/人脸等人工闸门）。
+   * tea.webtrn.cn：研修活动（讨论区发帖/回帖）+ 研修作业（上传类活动：填正文 + 传附件）。
    *
-   * 所以这个适配器只做**只读识别与报告**，给订单处理提供现场事实：
-   * 当前是哪种页面、有哪些活动项（研讨类/上传类）、编辑器与上传控件是否就位、讨论区 iframe。
-   * 2026-10-14 实测结构见 docs 交接文档「站点速查」。
+   * 写路径的实测事实（2026-10-14，都来自真实页面）：
+   *   · 讨论区在子 iframe `taolun/learn/courseTopicAction.action?itemId=…` 里，同源可直接操作；
+   *   · 每个帖子有一个 `textarea#replyContent_<postId>` 回复框，配套 `<input value=发表>`
+   *     的 onclick 是 `checkAndSaveReply('replyContent_<postId>','<topicId>')` —— 填值后点它即提交；
+   *   · 顶层发帖框是「没有 replyContent_ 前缀的 textarea」+ `<a id="editor_area">提交</a>`；
+   *   · 上传类活动的正文域 id 形如 `intro_<itemId>` / `des_<itemId>`，附件走 `input[type=file]`
+   *     （由控制端 CDP `DOM.setFileInputFiles` 塞文件，见 scripts/webtrn-attach.mjs）。
+   * 提交纪律：一次点击、看回执/计数变化再决定是否重试，别重复提交（见技能 SKILL.md）。
    */
   const ADAPTER_WEBTRN = {
     id: 'webtrn',
@@ -1131,8 +1134,143 @@
     async poll() {
       const kind = this.pageKind();
       state.webtrn = { kind, items: kind === 'activity' ? this.activityItems() : [], controls: this.controls(), at: now() };
-      // 约每 1 分钟记一条，别刷屏
       if (state.loopTicks % 20 === 1) log('webtrn 监看', kind, JSON.stringify(state.webtrn.controls));
+    },
+
+    // ---- 写路径：讨论区 -------------------------------------------------
+    frames() {
+      return Array.from(document.querySelectorAll('iframe')).filter(f => /courseTopicAction/i.test(f.src || ''));
+    },
+    frame(idx) {
+      const f = this.frames()[idx || 0];
+      if (!f) throw new Error('没有第 ' + (idx || 0) + ' 个讨论区 iframe（当前 ' + this.frames().length + ' 个）');
+      if (!f.contentDocument) throw new Error('讨论区 iframe 不可访问（跨域或未加载完）');
+      return f;
+    },
+    /** 读帖子：{postId, text} —— 回帖前先读，才能回复得对口 */
+    posts(idx) {
+      const d = this.frame(idx).contentDocument;
+      const out = [];
+      d.querySelectorAll('textarea[id^=replyContent_]').forEach(ta => {
+        const postId = ta.id.replace('replyContent_', '');
+        let node = ta.parentElement, best = null, bestLen = 0;
+        for (let i = 0; i < 4 && node; i++) {
+          const len = (node.innerText || '').length;
+          if (len > bestLen && len < 2500) { bestLen = len; best = node; }
+          node = node.parentElement;
+        }
+        const raw = (best ? best.innerText : '').replace(/\s+/g, ' ').trim();
+        out.push({ postId, text: raw.slice(0, 200) });
+      });
+      return out;
+    },
+    /** 回帖：填 replyContent_<postId> → 点该帖的提交按钮
+     *  实测细节：按钮 onclick 是 checkAndSaveReply('<postId>','<topicId>') —— **第一个参数是帖子 id 本身**
+     *  （回复框的 id 才是 replyContent_ 前缀），而且同一个按钮兼"展开回复框/提交"两用，
+     *  所以必须**先填值再点**，否则只会把空框展开。 */
+    reply(idx, postId, text) {
+      const f = this.frame(idx);
+      const d = f.contentDocument, w = f.contentWindow;
+      const ta = d.getElementById('replyContent_' + postId);
+      if (!ta) throw new Error('找不到帖子 ' + postId + ' 的回复框（楼层变了？重新 posts()）');
+      ta.value = String(text || '');
+      try { ta.dispatchEvent(new w.Event('input', { bubbles: true })); ta.dispatchEvent(new w.Event('change', { bubbles: true })); } catch (_) { }
+      const btn = Array.from(d.querySelectorAll('a[onclick*=checkAndSaveReply],input[onclick*=checkAndSaveReply]'))
+        .find(b => {
+          const m = /checkAndSaveReply\(\s*'([^']+)'/.exec(b.getAttribute('onclick') || '');
+          return m && m[1] === postId;
+        });
+      if (!btn) throw new Error('找不到帖子 ' + postId + ' 的提交按钮');
+      // ★ 必须异步点击：这个站点的提交处理里有同步 XHR，一旦挂住会把调用方的求值线程一起拖死
+      //   （2026-10-14 实测：直接 btn.click() 让 CDP Runtime.evaluate 超时、整个标签卡死，
+      //    只能靠 Page.navigate 重新加载才救得回来）。放进 setTimeout 后求值立刻返回，后续靠 check() 轮询。
+      this.autoConfirm(true);
+      try { w.setTimeout(function () { try { btn.click(); } catch (_) { } }, 30); } catch (_) { btn.click(); }
+      log('webtrn 回帖已提交(异步)', postId, String(text || '').length + '字');
+      return { postId, chars: String(text || '').length, button: (btn.value || btn.innerText || '').trim(), mode: 'async' };
+    },
+    /** 关掉原生确认框对自动化的阻塞（confirm 一律 true、alert 只记日志）；传 false 还原 */
+    autoConfirm(on) {
+      const w = window;
+      const targets = [w].concat(this.frames().map(f => { try { return f.contentWindow; } catch (_) { return null; } }).filter(Boolean));
+      let n = 0;
+      for (const t of targets) {
+        try {
+          if (on === false) {
+            if (t.__ncOrigConfirm) { t.confirm = t.__ncOrigConfirm; t.alert = t.__ncOrigAlert; }
+          } else {
+            if (!t.__ncOrigConfirm) { t.__ncOrigConfirm = t.confirm; t.__ncOrigAlert = t.alert; }
+            t.confirm = function (m) { log('webtrn confirm 自动接受：' + String(m || '').slice(0, 80)); return true; };
+            t.alert = function (m) { log('webtrn alert：' + String(m || '').slice(0, 80)); };
+            n++;
+          }
+        } catch (_) { }
+      }
+      return { windows: n, mode: on === false ? 'restored' : 'installed' };
+    },
+    /** 回帖后的自检：我的回帖计数 + 该讨论区帖子数 */
+    check(idx) {
+      const d = this.frame(idx).contentDocument;
+      const counter = Array.from(d.querySelectorAll('a,span,div,li'))
+        .map(e => (e.innerText || '').trim())
+        .find(t => /^我的回帖\(\d+条\)$/.test(t)) || null;
+      const posts = d.querySelectorAll('textarea[id^=replyContent_]').length;
+      return { counter, replyBoxes: posts };
+    },
+    /** 发帖：顶层编辑器（无 replyContent_ 前缀的 textarea）+ #editor_area */
+    newTopic(idx, text) {
+      const f = this.frame(idx);
+      const d = f.contentDocument, w = f.contentWindow;
+      const ta = Array.from(d.querySelectorAll('textarea')).find(t => !/^replyContent_/.test(t.id || ''));
+      if (!ta) throw new Error('找不到顶层发帖输入框');
+      ta.value = String(text || '');
+      try { ta.dispatchEvent(new w.Event('input', { bubbles: true })); } catch (_) { }
+      const btn = d.querySelector('#editor_area') ||
+        Array.from(d.querySelectorAll('a,input')).find(b => /提交/.test(b.value || b.innerText || ''));
+      if (!btn) throw new Error('找不到发帖「提交」按钮');
+      btn.click();
+      log('webtrn 发帖已提交', String(text || '').length + '字');
+      return { chars: String(text || '').length };
+    },
+
+    // ---- 写路径：上传类作业 ----------------------------------------------
+    /** 列出上传类活动的正文域与附件位 */
+    homework() {
+      const out = [];
+      document.querySelectorAll('textarea[id^=intro_],textarea[id^=des_]').forEach(t => {
+        const itemId = String(t.id).replace(/^(intro_|des_)/, '');
+        let rec = out.find(x => x.itemId === itemId);
+        if (!rec) { rec = { itemId, intro: null, des: null, fileInputs: 0 }; out.push(rec); }
+        if (/^intro_/.test(t.id)) rec.intro = t.id; else rec.des = t.id;
+      });
+      out.forEach((rec, i) => {
+        const host = document.getElementById(rec.intro) ? document.getElementById(rec.intro).closest('div[class],li') : null;
+        const scope = (host && host.parentElement) || document;
+        rec.fileInputs = scope.querySelectorAll('input[type=file]').length;
+        rec.buttons = Array.from(scope.querySelectorAll('a,input[type=button],button'))
+          .map(b => (b.value || b.innerText || '').trim()).filter(Boolean).slice(0, 10);
+        rec.index = i;
+      });
+      return out;
+    },
+    /** 填上传类活动的正文（intro/des 两个域） */
+    fillHomework(ref, text) {
+      const rec = typeof ref === 'number' ? this.homework()[ref] : ref;
+      if (!rec) throw new Error('没有这个作业项');
+      const t = String(text || '');
+      if (rec.intro) { const e = document.getElementById(rec.intro); if (e) { e.value = t.slice(0, 2000); e.dispatchEvent(new Event('input', { bubbles: true })); } }
+      if (rec.des) { const e = document.getElementById(rec.des); if (e) { e.value = t; e.dispatchEvent(new Event('input', { bubbles: true })); } }
+      log('webtrn 作业正文已填', rec.itemId, t.length + '字');
+      return { itemId: rec.itemId, chars: t.length };
+    },
+    /** 按文字点按钮（保存/提交/完成上传/继续添加…） */
+    clickByText(label) {
+      const hit = Array.from(document.querySelectorAll('a,input[type=button],input[type=submit],button'))
+        .find(b => new RegExp(label).test(b.value || b.innerText || ''));
+      if (!hit) throw new Error('找不到按钮：' + label);
+      hit.click();
+      log('webtrn 已点击', label);
+      return { clicked: label };
     }
   };
 
@@ -1291,6 +1429,8 @@
     apis: () => apiLog.slice(-60), feed: () => quizFeed.slice(-5), bank: () => bank,
     /** 调试用：手动问一道题（形如 {type:1,name:'...',optionList:[{name:'A',data:'...'}]}） */
     askDs: q => dsAnswer(q),
+    /** webtrn 写路径（发帖/回帖/作业）—— 订单流程用；别的平台为 null */
+    webtrn: (P_ADAPTER && P_ADAPTER.id === 'webtrn') ? P_ADAPTER : null,
     headers: (kw) => kw ? reqHeaders.filter(r => r.url.includes(kw)).slice(-5) : reqHeaders.slice(-15),
     login: () => loginInfo,
     quizElements() {
