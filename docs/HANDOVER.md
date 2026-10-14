@@ -1,0 +1,473 @@
+# NetClass 交接文档
+
+> 面向接手这套代码的人。README 讲「这是什么」，本文档讲**「怎么接着干活」**：
+> 架构、代码地图、部署、排障手册、以及**每个坑的成因**（最有价值的部分）。
+>
+> 最后更新：2026-10-14 · HEAD `2f64ea5` · 21 个提交
+
+---
+
+## 0. 三分钟上手
+
+**这是什么**：跑在用户 Windows 笔记本（`192.168.1.8`，用户 `WJX`）上的浏览器自动化，
+用来在两个网课平台上自动播放课程、处理随堂题、逐级推进课程。
+
+**代码在哪**：
+
+```
+开发（本机）  C:\Users\Administrator\Desktop\Vibe\_opensource\artifacts\TaskMesh\netclass-20261013
+部署（笔记本）%APPDATA%\OCS Desktop\downloads\extensions\netclass-loader\   ← 加载器扩展
+              %LOCALAPPDATA%\TaskMesh\netclass\                            ← 脚本文件
+```
+
+**跑起来**：
+
+```powershell
+cd <开发目录>
+node scripts/build.mjs          # 构建 netclass.user.js
+node scripts/build-loader.mjs   # 构建 loader-ext/bundled.js
+node scripts/nc.mjs run --file runs\remote\status-check.ps1   # 看状态
+node scripts/nc.mjs run --file runs\remote\start-visible.ps1  # 重启两个可见窗口
+```
+
+**看当前在干什么**：
+
+```powershell
+node scripts/tile-verify.mjs                    # 两窗口位置 + 页面状态
+node scripts/probe-page.mjs 9224 shengshengketang   # shengsheng 详情
+node scripts/ss-logs.mjs --port 9224 --secs 8      # 控制台日志
+```
+
+---
+
+## 1. 系统架构
+
+### 1.1 三层执行链
+
+```
+┌─ 加载器扩展 (loader-ext/) ────────────────────────────────────┐
+│  MV3 service worker，随 OCS 启动浏览器自动加载                  │
+│  · 定期从 http://127.0.0.1:17800 拉最新脚本（拉不到用内置副本）  │
+│  · chrome.userScripts.register() 注册到两个课程域               │
+│  · 对已打开的标签页做补注入（解决页面比扩展先加载的竞态）         │
+└──────────────────────┬───────────────────────────────────────┘
+                       │ chrome.userScripts（world: MAIN）
+                       ▼
+┌─ 脚本壳 (netclass.shell.user.js) ─────────────────────────────┐
+│  页面里最先跑；负责启动 + 热加载实现模块（30s 比对一次）          │
+└──────────────────────┬───────────────────────────────────────┘
+                       ▼
+┌─ 实现模块 (userscript/App.js) ────────────────────────────────┐
+│  · 平台适配器（shengsheng / qiyang）                            │
+│  · 视频策略：就绪闸门 → 静音 → 倍速 → 防暂停 → 结束推进          │
+│  · 卡死看门狗 / 顺序校验看护 / 随堂题三态处理                     │
+│  · 控制面板（右下角）+ 提示横幅（顶部，可关闭）                    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 1.2 为什么不用油猴
+
+OCS 内置 Chrome 137 + 未打包扩展 + 计划任务启动这套环境下，**Tampermonkey 装得上但不执行任何用户脚本**
+（连 3 行 hello world 都不跑；已验证 `chrome.userScripts` 能力本身正常，是 TM 这条链不可靠）。
+
+所以自研了 `loader-ext`。交付形态不变：放进 OCS 的扩展目录，OCS 每次启动浏览器会
+`getExtensionPaths(extensionsFolder)` 扫描全量加载。
+
+**注意**：`chrome.userScripts.register()` 在这个 Chrome 版本只接受 `js: [{code}]` 对象，
+**不接受裸字符串**。
+
+### 1.3 站点层级（shengsheng 三层）
+
+```
+/home                                 两门课（.classify-card）
+ └─ /record/sub/<id>?classifyId=…      子课程列表（span.state-tag 显示 学习中/未开始/已完成）
+     └─ /course/v2/<id>                课时目录（.lesson-item）
+```
+
+`App.js` 里的 `ssLevel()` 按路径判定层级，`poll()` 按层级分派：
+L1 挑未做过的课 → L2 挑未完成的子课程 → L3 处理课时。
+
+**课程完成后不要直接 `markAllDone`**，要逐级回退：L3 跑完 → 回 L2 → L2 跑完 → 回 L1 → L1 跑完才算全部完成。
+
+### 1.4 qiyang 两层
+
+```
+/agent/Goods/courses        课程页（章节列表）
+ └─ /agent/Goods/Courses?goodscourses_id=<id>   章节页（内联变量 isEnd / current_time / getUrl）
+```
+
+---
+
+## 2. 代码地图
+
+### 2.1 源码（要改的就是这些）
+
+| 文件 | 大小 | 职责 |
+|---|---|---|
+| `userscript/App.js` | 59 KB | **主要工作文件**。平台适配器、视频策略、弹题、导航、面板、横幅全在这 |
+| `userscript/netclass.shell.user.js` | 6 KB | 外壳：启动 + 热加载实现模块 |
+| `userscript/netclass.user.js` | 25 KB | 单文件打包版（油猴备用通道用） |
+| `loader-ext/background.js` | 8.6 KB | 加载器：拉脚本、注册、补注入、日志 |
+| `loader-ext/bundled.js` | 68 KB | 由 `scripts/build-loader.mjs` 生成的脚本副本 |
+| `loader-ext/manifest.json` | 0.4 KB | MV3 清单（v1.1.0） |
+
+### 2.2 scripts/ 里真正有用的（110 个文件，大部分是历史调试残留）
+
+**日常必用**
+| 脚本 | 用途 |
+|---|---|
+| `nc.mjs` | 远程执行总入口。`run --file/--script` 在笔记本跑 PS；`eval --port --target --expr` 在页面里跑 JS；`new/tabs` 管标签页 |
+| `build.mjs` / `build-loader.mjs` | 构建两个产物 |
+| `tile.mjs` / `tile-verify.mjs` | 左右半屏平铺 / 复核窗口与页面状态 |
+| `probe-page.mjs` | 通用页面探针（视频状态、模块状态、弹题计数） |
+| `measure.mjs` | **实测播放倍速**（按媒体时钟走速算，不是读 `playbackRate` 属性） |
+
+**加载器诊断**
+| 脚本 | 用途 |
+|---|---|
+| `loader-reload.mjs` | 触发 `chrome://extensions` 的「重新加载」（**改 background.js 后必须做**） |
+| `loader-log.mjs` / `loader-tail.mjs` | 读加载器日志环 + 注册状态 |
+| `loader-inject-test.mjs` | 手动向已打开标签补注入当前版本 |
+
+**专项诊断（出问题时现用）**
+| 脚本 | 用途 |
+|---|---|
+| `ss-logs.mjs` | shengsheng 控制台日志 |
+| `ss-structure.mjs` / `ss-home.mjs` | 三层 DOM 结构 |
+| `nav-trace.mjs` | 追踪页面导航序列（查刷屏/死循环） |
+| `refresh-diag.mjs` | 查「频繁刷新」 |
+| `quiz-state.mjs` | 弹题三种状态的 DOM |
+| `rate-ceiling.mjs` | 逐档测平台能接受的最高倍速 |
+| `order-guard-watch.mjs` | 盯「请按顺序观看视频」 |
+| `pause-guard-check.mjs` | 确认「已完成」后不会自播 |
+| `ss-stream-test.mjs` | 直接测流（m3u8 + 分片）是否健康 |
+| `panel-shot.mjs` | 截图 + 面板计算样式 |
+| `refresh-diag.mjs` / `win-titles.mjs` | 刷新诊断 / 窗口标题 |
+
+**笔记本侧（`runs/remote/*.ps1`，纯 ASCII）**
+| 脚本 | 用途 |
+|---|---|
+| `start-visible.ps1` | 一键重启两个可见窗口（杀进程 → 清 Singleton → 计划任务 `/IT` 启动 → 等端口） |
+| `start-webtrn.ps1` | 起第三个浏览器（教师培训平台，端口 9226） |
+| `status-check.ps1` | 进程数、端口、计划任务状态 |
+| `find-webtrn-profile.ps1` / `list-chrome-instances.ps1` | 环境盘点 |
+
+### 2.3 runs/
+
+| 子目录 | 内容 |
+|---|---|
+| `remote/` | 在笔记本上执行的 PowerShell 脚本（**必须纯 ASCII**，见 §5.10） |
+| `laptop-runtime/` `ssjs/` `qy/` | 历史抓取样本与证据 |
+
+---
+
+## 3. 部署链路
+
+### 3.1 完整流程
+
+```powershell
+cd <开发目录>
+
+# 1) 构建
+node scripts/build.mjs           # → dist/netclass.user.js
+node scripts/build-loader.mjs    # → loader-ext/bundled.js
+
+# 2) 推到笔记本（SSH + scp，密钥见下）
+#    loader-ext/{bundled.js,background.js} → %APPDATA%\OCS Desktop\downloads\extensions\netclass-loader\
+#    dist/netclass.user.js + userscript/App.js → %LOCALAPPDATA%\TaskMesh\netclass\
+
+# 3) 让加载器重新读代码（改 background.js 后必须）
+node scripts/loader-reload.mjs 9224
+
+# 4) 页面生效：刷新页面，或手动补注入
+node scripts/loader-inject-test.mjs 9224
+```
+
+`scripts/deploy.mjs` 封装了上面大部分步骤。
+
+### 3.2 SSH 连接参数
+
+```
+主机    WJX@192.168.1.8
+密钥    C:/Users/Administrator/.ssh/taskmesh_windows_laptop_ed25519
+特殊    HostKeyAlias=192.168.1.10（known_hosts 里按这个名记的）
+```
+
+`scripts/nc.mjs` 已内置这些参数，不用手写。
+
+### 3.3 调试端口与 profile
+
+| 端口 | 平台 | profile | 计划任务 |
+|---|---|---|---|
+| 9224 | shengsheng | `b33d3127b601404c8d0f694bb02939fa` | `NetClassVis-shengsheng` |
+| 9225 | qiyang | `3a6e9e389f794785bb5048d4bf39a36c` | `NetClassVis-qiyang` |
+| 9226 | webtrn（教师培训） | `7c4f1a92d3b64e0f8a5c2d6e9b1f4a37` | `NetClassVis-webtrn` |
+| 17800 | 本机脚本服务 | — | `NetClassServer` |
+
+（另有历史残留任务 `NetClassFreshTM` / `NetClassMatrix` / `NetClassProbe1-4`，可清理。）
+
+### 3.4 关键启动参数
+
+```
+--no-sandbox                              计划任务上下文里 Chrome 沙箱起不来（exit=3 秒退），必需
+--hide-crash-restore-bubble               去掉「Chromium 未正确关闭」气泡
+--autoplay-policy=no-user-gesture-required 允许自动播放
+--user-data-dir / --load-extension / --remote-debugging-port=92xx
+--window-size=960,1032 --window-position=0,0|960,0   左右半屏
+```
+
+---
+
+## 4. 运行手册
+
+### 4.1 改代码后怎么生效
+
+| 改了什么 | 生效方式 |
+|---|---|
+| `userscript/App.js` | 构建 → scp → **刷新页面**（或 `loader-inject-test.mjs` 补注入） |
+| `loader-ext/background.js` | scp → **`loader-reload.mjs`（必须）**，Chrome 会缓存扩展脚本 |
+| `loader-ext/bundled.js` | 同上（它是 background 依赖的副本） |
+
+### 4.2 状态存储（排障时会用到）
+
+| 键 | 位置 | 内容 |
+|---|---|---|
+| `netclass.cfg.v3` | localStorage | 配置（enabled / 倍速 / 各开关） |
+| `netclass.bank.v3` | localStorage | 本地题库（题目 → 正确答案） |
+| `netclass.done.<platform>` | localStorage | 「已刷完」标记（**刷新后仍显示提示且不自动跑**） |
+| `nc.qy.done` | sessionStorage | qiyang 本轮已进过的章节（防重复跳转） |
+| `nc.qy.completed` | sessionStorage | qiyang 站点确认完成（isEnd=1）的章节 |
+| `nc.ss.parentUrl` / `nc.ss.currentCourse` | sessionStorage | shengsheng 层级返回地址 |
+| `nc.ss.coursesDone` | sessionStorage | shengsheng 已完成的课程 |
+| `lastSig` / `logRing` | chrome.storage.local | 加载器去重签名 / 日志环 |
+
+**要重跑一遍**：删掉 `netclass.done.<platform>`，或在面板点「启动」（会一并清掉）。
+
+### 4.3 常见症状 → 排查命令
+
+| 症状 | 先看什么 |
+|---|---|
+| 页面完全没反应 | `loader-log.mjs`（有没有 `registered`）+ `probe-page.mjs`（`module` 是否 true） |
+| 视频不动 | `probe-page.mjs`（`readyState`/`duration`）+ `ss-logs.mjs`（有无报错） |
+| 卡在某一课 | `ss-logs.mjs` 看有无「卡在结尾」「尚未被站点确认完成」 |
+| 窗口不见 | `win-titles.mjs` + `status-check.ps1`（session 1 才有窗口） |
+| 页面反复刷新 | `nav-trace.mjs`（看导航序列） |
+| 弹题不答 | `quiz-state.mjs`（看是哪种状态）+ `ss-logs.mjs` |
+| 倍速不对 | `measure.mjs`（实测速度，别信 `playbackRate` 属性） |
+| 站点改了 | `ss-structure.mjs` / `ss-home.mjs` 重新摸 DOM |
+
+---
+
+## 5. 踩过的坑（按症状索引）★
+
+这一节是这套代码最值钱的部分——每个坑都真实发生过。
+
+### 5.1 油猴装得上但不执行
+**症状**：脚本已注册、已启用，页面里就是不跑（连 hello world 都不跑）。
+**根因**：TM 这条链在「OCS 内置 Chrome 137 + 未打包扩展 + 计划任务启动」下不可靠。
+**修法**：自研 `loader-ext`，直接用 `chrome.userScripts` 注册。`ab7f566`
+
+### 5.2 视频永不起播（`readyState` 恒为 0）
+**症状**：播放器停在 `xgplayer-isloading`，`duration` 为 null。
+**根因**：xgplayer/Aliplayer 走 MSE，**装载期间对 `<video>` 动手（尤其 `play()`）会打断起播**。
+**修法**：`mediaReady(v)` 就绪闸门（`readyState>=2 && duration>0`），未就绪只静音不接管。`ab7f566`
+**注意**：这个闸门后来造成过死锁（见 5.6），两个坑是一对。
+
+### 5.3 弹题从不提交
+**症状**：抓到了题、选了选项，但从不提交；`state.errors` 里刷 20 条。
+**根因**：`pendingQuiz is not defined`（漏了声明，ReferenceError）。
+**修法**：补声明。`614b4c8`
+
+### 5.4 弹题永远不答
+**症状**：弹窗挂着不动。
+**根因**：`poll()` 在「没有视频」时提前 `return`，走不到答题分支。
+**修法**：**弹题优先**——`poll()` 里先查弹窗，有就先答掉再管别的。`856b920`
+
+### 5.5 加载器改了不生效
+**症状**：`manifest.json` 版本已升，但 `background.js` 里的新函数全都不存在。
+**根因**：**Chrome 缓存扩展脚本**。
+**修法**：改完必须触发 `chrome://extensions` 的「重新加载」（`loader-reload.mjs`）。`e995b42`
+
+### 5.6 播放器等一个点击、我的闸门在等数据 → 死锁
+**症状**：播放器停在 `xgplayer-nostart`，视频永不加载。
+**根因**：`mediaReady` 闸门要等有数据才播，但播放器要一次点击才去拉流。
+**修法**：`kickStart()` —— 未开始态时点播放器**自己的开始按钮**（且仅在按钮可见时点）。
+**不要**在这种情况下直接 `video.play()`，会重新踩 5.2。`e995b42`
+
+### 5.7 「已完成」后视频自己又播起来
+**症状**：标记完成后视频仍在播放。
+**根因**：`kickStart()` 没检查 `CFG.enabled` / `state.allDone`，页面刚加载时会把视频踢起来。
+**修法**：`kickStart` 首行加闸；tick 里已完成/已停用时**主动按停**；`markAllDone` 在 3/8/15 秒后再各按一次。`4f96f21`
+
+### 5.8 shengsheng 倍速看起来「被站点禁止」
+**症状**：设 2x，约 600ms 后被拉回 1x，持续不了多久。
+**根因**：**我自己造成的**。配置里 `rateShengsheng: 1`，而 `ratechange` 监听里有段
+「600ms 后强制拉回脚本目标倍速」的逻辑——**603ms 那个时间点就是我自己那个 600ms 定时器**。
+**修法**：把脚本目标倍速对齐站点档位（shengsheng 1.5x / qiyang 2x，都用各自播放器自带的最高档）。
+**教训**：排查「谁在改我的倍速」时，先把自己的定时器排除掉。`9568011`
+
+### 5.9 窗口看不见
+**症状**：浏览器起来了、端口通，但桌面上看不到。
+**根因**：SSH 在 **session 0**，用户桌面是 **session 1**。从 SSH 直接启的进程落在 session 0。
+**修法**：计划任务 + `/IT` 参数，才在 session 1 出可见窗口。`4d6a514`
+
+### 5.10 PS 脚本报语法错误
+**症状**：`Missing closing '}'`。
+**根因**：脚本里的**中文注释经传输被打乱**，破坏了语法。
+**修法**：`runs/remote/*.ps1` **全部纯 ASCII**（提交前校验 `non-ascii bytes = 0`）。`4d6a514`
+
+### 5.11 弹窗卡在「回答错误」页
+**症状**：弹窗停在「回答错误 / 正确答案：B / [再试一次][跳过]」，既不提交也不关闭，挡住播放器。
+**根因**：只实现了「作答态」，没实现**答错态**（答错后平台换成结果页，脚本认不出来就干等）。
+**修法**：`answerQuiz` 按三态分支：作答态 / 答错态（读 `.correct-answer-text` 吃答案 → 点「再试一次」）/ 答对态。`d9f11c8`
+
+### 5.12 qiyang 章节无限跳转（看起来像疯狂刷新）
+**症状**：窗口每 ~6 秒换一个页面，停不下来。
+**根因**：`nextChapter()` 的兜底 `|| items.find(x => x.id !== curId)` **会绕回列表开头**；
+若绕回的章节也是 `isEnd=1`，就永远绕圈。
+**修法**：按「本轮已进过」清单只走没进过的，走完即停。`be9c72d`
+
+### 5.13 `Cannot read properties of undefined (reading 'catch')`
+**症状**：`applyPolicy` 里抛错，脚本半死。
+**根因**：`pickVideo()` 把 **Aliplayer 的内部对象**（`window.aliplayer._video`）当成 `<video>` 返回了。
+它不是 DOM 元素，`play()` 返回 undefined。
+**修法**：`isMediaEl()` 校验（必须有 `play` 且含 `readyState`/`currentTime`）；`play()` 调用全加防御。`be9c72d`
+**教训**：`err()` 记录调用栈前 3 帧，这个 bug 是靠它一枪命中的——排障函数里加栈很值。
+
+### 5.14 倍速每 tick 都被重设（日志刷屏）
+**症状**：`rateFixes` 数值恰好等于 `ticks`。
+**根因**：判据用的是 Aliplayer 的 `getStatus().speed`，**该字段取不到**，于是永远判为「需要纠正」。
+**修法**：改以 `<video>.playbackRate` 为准。`be9c72d`
+
+### 5.15 视频卡在结尾，整课卡死
+**症状**：视频停在 `duration - 0.2s`，播放器 `isloading`，`ended` 事件永不触发。
+**根因**：`ended` 不触发 → 「结束→下一节」等不到。
+**修法（两级）**：
+1. 先 `v.currentTime = duration - 0.04` + `play()` —— **推过终点线**，让站点自己完成完播上报；
+2. 推完 12 秒仍不完播，才走自行推进做兜底。
+**注意**：**不能直接跳下一课**——站点会拦（见 5.16）。`3428d14`
+
+### 5.16 弹窗「请按顺序观看视频」
+**症状**：脚本切下一课时，站点弹 `van-toast`「请按顺序观看视频」。
+**根因**：`goNext()` **从不检查当前课时是否已被站点确认完成**。视频一 ended 就立刻点下一课，
+但站点是「先收完播上报 → 再刷新目录状态」，中间有几秒延迟，**抢跳就判为跳课**。
+**修法**：跳转前轮询等当前课时在目录里变成「已完成」（`waitLessonDone`，最多 90s）；
+`goNext()` 加硬校验；删掉「回到首个未完成」那条往回跳的兜底。`5414890`
+**原则**：这是**遵守**站点的顺序校验，不是绕过它。
+
+### 5.17 toast 误判（以为站点一直在拦）
+**症状**：观察脚本报「出现弹窗 64 次」，但实际只拦过两三次。
+**根因**：**Vant 的 toast 节点常驻 DOM**，隐藏后文案还在。直接读 `innerText` 会把历史提示当成本次拦截。
+**修法**：`toastText()` 检查可见性（`offsetWidth/Height` + `display/visibility/opacity`）。`92be7b5`
+
+### 5.18 加载器每 20~30 秒重复注册
+**症状**：日志被 `registered remote ... build=xxxx` 刷满；页面里脚本反复重启（`壳已启动`/`旧实例已回收`），
+**弹题要等好几分钟才答**（模块内存状态被反复清零）。
+**根因**：`ensure()` **无条件调 `register()`**。虽然注入侧有版本比对（`已是最新版，跳过`），
+但反复调用 `userScripts.register` 仍会让 Chrome 在各匹配文档重跑脚本。
+**修法**：加内容签名（djb2 hash + source）持久化 `lastSig`，一致且非 `installed/startup/boot/manual` 就直接 return。`13ca9b2`
+
+### 5.19 「全部完成」误报
+**症状**：报「共 57 课全完成」，实际还有没看的课。
+**根因**：课时列表**渲染有延迟**，读早了会把「还没渲染出状态」当成「全部已完成」。
+**修法**：隔 4 秒**二次确认**，两次都干净才跳走。`2f64ea5`
+
+### 5.20 单课完成 ≠ 全部完成
+**症状**：跑完「心理学导论」就宣告全部完成并暂停，但账号下还有 12 个子课程、另一门课。
+**根因**：脚本只在第三层循环，层级概念缺失。
+**修法**：`ssLevel()` 三层分派 + 逐级回退（见 §1.3）。`2f64ea5`
+
+---
+
+## 6. 站点事实速查
+
+### 6.1 shengsheng（`edu.shengshengketang.com`）
+
+**三层结构**见 §1.3。
+
+**关键选择器**
+| 用途 | 选择器 |
+|---|---|
+| 课程卡（L1） | `.classify-card`，标题 `.card-title` |
+| 子课程状态（L2） | `span.state-tag`（文：学习中/未开始/已完成） |
+| 课时项（L3） | `.lesson-item`，状态 `.lesson-status-container` |
+| 当前课时 | `.lesson-item.active-lesson` |
+| 播放器 | `.video-player`（xgplayer） |
+| 弹窗 | `.pop-quiz-dialog` |
+| 答错结果页 | `.result-section.incorrect` → 答案在 `.correct-answer-text` |
+| 站点 toast | `.van-toast__text` |
+
+**接口**
+```
+GET  /api/user/login/info                                        登录态
+GET  /api/course/curriculum/tourist/selectDetail/{currId}         课程详情
+GET  /api/course/vod/getPlayInfo?videoId&currId                   播放地址
+POST /api/course/viewing/records/addCourseViewingRecords          观看进度上报（站点自己发）
+GET  /api/exam/popQuiz/getByCourseAndNodeId?courseId&nodeId       随堂题
+POST /api/exam/popQuiz/insertUserAnswer                           作答（回包 state: 2=对 3=错，附答案）
+```
+
+**其它事实**
+- 视频走 MSE（HLS 分片），流来自 `video.mengkezaixian.com`
+- 站点自带倍速菜单只有 1x / 1.25x / 1.5x（**1.5x 就是它自己的上限**）
+- 实测播放器能接受 8x 属性值，但实际吞吐 **6x 封顶**，再高反而更慢（分片跟不上）
+- 「请按顺序观看视频」是它的防跳校验（见 5.16）
+- 有「当前视频不允许快进」的防拖拽提示
+
+### 6.2 qiyang（`study.bjqiyang.com`）
+
+- 章节页内联变量：`isEnd` / `current_time` / `getUrl`
+- 站点自己的 `video.js` 负责上报：播放中每 300s / 拖动 >60s / 播放结束时，
+  调 `getUrl + "&current_time=" + 秒`（`getUrl=/agent/MemberGoodscourses/finish?goodscourses_id=X`）
+- 播放器全局对象 `player`，有 `setSpeed()`
+- **倍速档位表本来含 2x**
+- 36 个直播课脚本跳过（非录播）
+- 视频是直链 MP4，媒体时钟能真的跑到 16x（Chrome 上限）
+
+### 6.3 webtrn（`tea.webtrn.cn`，教师培训）
+
+- 登录页 `/center/loginSmall.jsp`，字段 `#loginId` / `#passwd` / `#authCode`（验证码默认隐藏）
+- 成绩构成：课程学习 40% / 研修作业 40% / 研修活动 20% / 资源共享 20%
+- 研修活动页 `/project/template/guopei/newTeam/activity_view.jsp?activityId=…&teamId=…`
+  四个标签页（`setTab('tabs',N,4,'<id>')`），前两个是评论类，后两个是上传类
+- 作业列表 `/project/template/guopei/homework/student_homework_list.jsp`（正文 AJAX 加载）
+
+---
+
+## 7. 已知限制 / 未完成
+
+1. **`--no-sandbox` 是必需的妥协**：计划任务上下文里 Chrome 沙箱起不来（exit=3 秒退）。
+   若改从 OCS 面板点「运行」启动则不需要，但窗口就归 OCS 管。
+2. **油猴仍然是坏的**：本环境里它不执行任何用户脚本。OCS 脚本列表里的条目仅作备用。
+3. **多选题：路径已实现，但从未跑过真实样本**（不是「没处理」，是「没验证」）。
+   相关代码都在，链路上是通的：
+   - 类型识别：`const type = /多选|不定项/.test(typeTxt) ? 2 : …`（读 `.question-type` 的文案）
+   - 多选重新推断：`ranked.filter(r => r.s > 0.5).map(r => r.name)` → `join(',')`
+   - 作答：`g.answer.split(',')` → 命中的选项**全部** `click()`
+   - 平台回传答案写回题库时做了归一化：`"AB"` → `"A,B"`
+
+   **待验证的两点**：
+   - **类型识别是单点依赖**——如果站点在那道题上没渲染 `.question-type`（或文案不是「多选/不定项」），
+     `type` 会落到 1（单选），启发式就只会挑一个选项。这是最可能出问题的地方。
+   - `heuristic-multi` 的阈值（`s > 0.5`）没在真实多选题上校准过。
+   建议：拿到一道真实多选（走错一次拿到平台答案即可）后，把 `type` 判定和最终点击的选项数打日志核对。
+4. **直播课不处理**（qiyang 36 个）。
+5. **窗口归属**：当前浏览器由计划任务在登录会话里启动（可见），OCS 面板显示为未运行。
+   要让 OCS 托管：关掉窗口，在 OCS 点「运行」。
+6. **历史残留计划任务**可清理：`NetClassFreshTM` / `NetClassMatrix` / `NetClassProbe1-4`。
+7. **README 部分内容已过时**（仍写 shengsheng 1.00x、缺后面 10 来个修复）。
+   以本文档和 `git log` 为准。
+
+---
+
+## 8. 排障心法
+
+1. **先看日志，别先猜**。`ss-logs.mjs` + `loader-log.mjs` 基本能定位 80% 的问题。
+2. **区分「我的代码」和「站点的行为」**。5.8 和 5.17 都是我把自己的行为/残留 DOM 当成了站点在拦。
+   隔离方法：把 `CFG.enabled` 设 false 刷新，看站点自己表现如何。
+3. **`err()` 记调用栈**。5.13 就是靠它一枪命中的，别删这几行。
+4. **时序问题占大多数**。5.16 / 5.19 / 5.15 全是「读早了」或「写早了」。
+   凡是「读页面状态做决策」的地方，都要考虑渲染延迟，宁可二次确认。
+5. **站点改版后**：先用 `ss-structure.mjs` / `ss-home.mjs` 重新摸 DOM，再改选择器。
+6. **每修一个坑，写清根因再提交**。`git log` 里那 21 条提交信息就是这套系统的病历本，
+   比代码注释有用。
