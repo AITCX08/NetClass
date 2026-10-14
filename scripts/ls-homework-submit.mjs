@@ -13,7 +13,9 @@ const DO_SUBMIT = !!A.submit;
 const WAIT = Number(A.wait || 45);
 
 const list = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
-let p = list.find(t => t.type === 'page' && String(t.url).includes('homework_doing'));
+const ITEM = String(A.item || '');
+const pages = list.filter(t => t.type === 'page' && String(t.url).includes('homework_doing'));
+let p = ITEM ? pages.find(t => String(t.url).includes(ITEM)) : pages[0];
 if (!p) p = list.find(t => t.type === 'page' && String(t.url).includes('homework_index'));
 if (!p) { console.log('没找到作业页（homework_doing / homework_index）'); process.exit(1); }
 const ws = new WebSocket(p.webSocketDebuggerUrl);
@@ -42,6 +44,23 @@ if (!String(p.url).includes('homework_doing')) {
 }
 
 console.log('附件位: ' + await ev(`document.querySelectorAll('input[type=file]').length`));
+// 已有附件先删掉（避免传成两份 / 文件名不合要求）
+const had = await ev(`(function(){
+  var t = document.body.innerText.replace(/\\s+/g,' ');
+  var m = t.match(/附件：([^\\s（(]+)/);
+  var del = Array.from(document.querySelectorAll('a,span,button')).find(function(x){ return /^\\s*删除\\s*$/.test((x.innerText||'').trim()); });
+  return JSON.stringify({ existing: m ? m[1] : null, hasDelete: !!del });
+})()`);
+console.log('现有附件: ' + had);
+const h = JSON.parse(had);
+if (h.existing && h.hasDelete) {
+  console.log('删除旧附件: ' + await ev(`(function(){
+    var del = Array.from(document.querySelectorAll('a,span,button')).find(function(x){ return /^\\s*删除\\s*$/.test((x.innerText||'').trim()); });
+    if (!del) return 'no-delete';
+    del.click(); return 'deleted';
+  })()`));
+  await sleep(2500);
+}
 const obj = await send('Runtime.evaluate', { expression: `document.querySelector('input[type=file]')`, returnByValue: false });
 if (!obj.result.objectId) { console.log('没有 file input'); ws.close(); process.exit(1); }
 await send('DOM.setFileInputFiles', { files: [FILE], objectId: obj.result.objectId });
@@ -78,10 +97,28 @@ console.log('提交: ' + await ev(`(function(){
   var cs = Array.from(document.querySelectorAll('a,input[type=button],input[type=submit],button'));
   var b = cs.find(function(x){ return /^\\s*提交\\s*$/.test((x.value||x.innerText||'').trim()); });
   if (!b) return 'no-submit-button';
-  window.__ncConfirm = true; var oc = window.confirm; window.confirm = function(){ return true; };
   setTimeout(function(){ try { b.click(); } catch(e){} }, 20);
   return 'clicked';
 })()`));
+await sleep(2500);
+
+// ★ 站内自绘确认框（div.small_submit_comfirm）不吃 el.click() —— 用 CDP 真实鼠标点它的中心
+const rect = await ev(`(function(){
+  var el = document.querySelector('div.small_submit_comfirm') || document.querySelector('div.small_submit');
+  if (!el) return null;
+  var r = el.getBoundingClientRect();
+  if (!r.width) return null;
+  return JSON.stringify({ x: Math.round(r.left + r.width/2), y: Math.round(r.top + r.height/2), cls: String(el.className) });
+})()`);
+if (rect) {
+  const { x, y } = JSON.parse(rect);
+  console.log('确认真实鼠标点击: ' + rect);
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+  console.log('已点击确认');
+} else {
+  console.log('没看到确认框（可能无需确认）');
+}
 
 for (let i = 0; i < Math.ceil(WAIT / 5); i++) {
   await sleep(5000);
