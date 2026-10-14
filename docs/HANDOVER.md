@@ -479,10 +479,18 @@ w.setTimeout(function(){ btn.click(); }, 30);   // 求值立刻返回，提交�
 实测文件确实分片上传成功：`200 https://yunpan.sdk.webtrn.cn/api/chunkupload`，界面进度 100%。
 **注意**：webtrn 的上传区在**笔记本**上跑，所以 `--file` 必须是笔记本本地绝对路径
 （先 `scp` 推上去；`orders/` 目录要自己建）。
-**还差最后一步**：上传完成后资源处于"待补元数据"状态，
-「属性 → 学科/学段/类别/标题/简介 → 保存」这块面板是**隐藏容器**（`offsetParent === null`），
-直接找可见输入框会一无所获 —— 需要先触发展开（按钮不是 `a[value=属性]` 这种直白形态，得继续逆 uploadify 那套 DOM），
-补完并保存后「已有 N 份资源上传成功」才会 +1。
+**还差最后一步**：上传完成后资源处于"待补元数据"状态。
+平台自己的保存函数是 **`saveResource('<themeId>')`**，它先校验
+`#resourceSubject_<themeId>` / `#resourceStage_<themeId>` 不能是「选择学科/选择学段」；
+元数据字段按 itemId 组织：`select[name=subject_<itemId>]`、`select[name=stage_<itemId>]`、
+`select[name=type_<itemId>]`、`input[name=title_<itemId>]`、`input[name=metaId_<itemId>]`。
+**这些域都在隐藏容器里**（`offsetParent === null`），按"找可见输入框"的思路会一无所获 ——
+直接按 name/id 赋值即可（隐藏元素照样能写值），再调 `saveResource('<themeId>')`。
+同页还有 `showResource` / `uploadResource` / `deleteResource` 可用。
+保存成功后「已有 N 份资源上传成功」才会 +1。
+**副作用要清**：2026-10-14 的测试在「专业发展规划（研修心得）」下留了 **2 条重复的暂存资源**
+（`div.a_u_row0.res_<itemId>_o_<uploadId>`，每条带 `#cancleResUpload_<itemId>` 取消链接，均未保存）；
+下次重传前先点该链接清掉，否则保存时会两份一起提交。
 **顺带**：webtrn 上**油猴也装了同名壳**，它会去 fetch `http://127.0.0.1:17800/App.js` 并被 CORS 拦掉
 （控制台每几秒一条 `ERR_FAILED`），最后回退到内置 stub。不影响加载器注入的模块，但噪音很大；
 要干净就把 OCS 脚本列表里 webtrn 那条停用。
