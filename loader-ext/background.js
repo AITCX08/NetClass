@@ -6,7 +6,7 @@
  * 表现为「脚本装得上、不执行」。本扩展把「注册 + 执行」这一层自己做掉，稳且可控。
  *
  * 行为：
- *   - 启动 / 安装 / 每 15 分钟：从本机服务拉最新脚本（拉不到就用内置副本）
+ *   - 启动 / 安装 / 每 2 分钟（alarm）/ 目标站点导航时：从本机服务拉最新脚本（拉不到就用内置副本）
  *   - 用 chrome.userScripts.update/register 注册到 MAIN world，document_start
  *   - 脚本更新后，新开的页面自动用新版
  */
@@ -61,7 +61,7 @@ async function fetchRemote() {
   } finally { clearTimeout(t); }
 }
 
-async function register(code, source) {
+async function register(code, source, sig) {
   await chrome.userScripts.configureWorld({
     worldId: WORLD_ID,
     csp: "script-src 'self' 'unsafe-inline' *",
@@ -81,7 +81,12 @@ async function register(code, source) {
     allFrames: false,
     world: 'MAIN'
   }]);
-  await chrome.storage.local.set({ lastSource: source, lastAt: Date.now(), lastLen: code.length, lastBuildId: st.id });
+  // 去重签名必须最先落盘：MV3 的 SW 随时可能在后面的补注入过程中被回收，
+  // 一旦这句没执行到，下一个 alarm 读不到 lastSig 就会重复注册（表现为日志每 60s 一条
+  // "registered ..."，页面模块内存状态被反复清零）。2026-10-14：qiyang 配置就是这样刷了一整晚。
+  try {
+    await chrome.storage.local.set({ lastSource: source, lastAt: Date.now(), lastLen: code.length, lastBuildId: st.id, lastSig: sig });
+  } catch (_) { }
   log('registered', source, code.length + 'B', 'build=' + st.id);
   await injectIntoOpenTabs(code);
 }
@@ -139,8 +144,7 @@ async function ensure(reason) {
   } catch (_) { }
 
   try {
-    await register(code, source);
-    try { await chrome.storage.local.set({ lastSig: sig }); } catch (_) { }
+    await register(code, source, sig);
   } catch (e) {
     log('register failed: ' + e.message);
   }
@@ -148,7 +152,7 @@ async function ensure(reason) {
 
 chrome.runtime.onInstalled.addListener(() => ensure('installed'));
 chrome.runtime.onStartup.addListener(() => ensure('startup'));
-chrome.alarms.create('netclass-refresh', { periodInMinutes: 1 });
+chrome.alarms.create('netclass-refresh', { periodInMinutes: 2 });
 chrome.alarms.onAlarm.addListener(a => { if (a.name === 'netclass-refresh') ensure('alarm'); });
 
 // MV3 的 SW 会被回收，光靠 alarm 不够 —— 每次目标站点导航时都检查一次更新
