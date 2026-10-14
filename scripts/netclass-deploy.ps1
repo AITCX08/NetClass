@@ -40,10 +40,14 @@ function Invoke-RemotePs([string]$Code) {
 
 switch ($Action) {
   'push' {
+    # 注意：netclass.user.js 必须是 **dist 里的自包含产物**（壳 + 内联 App.js）。
+    # 曾经这里推的是 userscript/netclass.shell.user.js（裸壳）——那只有油猴通道能用
+    # （壳依赖 GM_xmlhttpRequest 去 17800 拉 App.js）；加载器在 MAIN world 注册它时
+    # 会被混合内容/CORS 拦掉，只能退到壳里的兜底实现（不答题、不自动下一节）。
     $pairs = @(
       "$Repo\scripts\netclass-server.ps1|$RemoteRoot\server.ps1",
       "$Repo\userscript\App.js|$RemoteRoot\App.js",
-      "$Repo\userscript\netclass.shell.user.js|$RemoteRoot\netclass.user.js"
+      "$Repo\dist\netclass.user.js|$RemoteRoot\netclass.user.js"
     )
     Invoke-RemotePs "New-Item -ItemType Directory -Force -Path '$RemoteRoot','$RemoteRoot\logs' | Out-Null; 'ok'"
     foreach ($pair in $pairs) {

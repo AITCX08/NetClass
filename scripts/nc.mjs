@@ -7,7 +7,8 @@
  *   tabs   [--port]                列出标签页
  *   new    --port --url <url>      新开标签页
  *   eval   --port --target <子串> --expr '<js>' | --file <path>
- *   run    --file <ps1>            在笔记本上执行 PowerShell（分块传输）
+ *   run    --file <ps1> [--args '-Apply']   在笔记本上执行 PowerShell（分块传输）
+ *          --args 只允许字/数字/空格与 - . : = \ / " 这些字符，避免注入到远程命令行
  *   watch  --port --url <url>      打开课程页并常驻验证脚本状态（每 5s 打印一次）
  *   probe  --port --url <url>      打开页面并抓取 DOM/接口探针（用于适配新站点）
  *
@@ -50,7 +51,9 @@ function psOne(code, timeout = 60000) {
   return sshRaw(`powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${b64}`, timeout);
 }
 let seq = 0;
-function psFile(code, timeout = 300000) {
+const ARGS_SAFE = /^[A-Za-z0-9 _\-.:=\\/"]*$/;
+function psFile(code, timeout = 300000, args = '') {
+  if (args && !ARGS_SAFE.test(args)) throw new Error('--args 含不安全字符: ' + args);
   const tag = 'nc' + (++seq);
   const b64 = Buffer.from(code, 'utf16le').toString('base64');
   const f = `${WORK}\\${tag}.b64`;
@@ -65,7 +68,7 @@ $c = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($b))
 $exe = '${WORK}\\${tag}-exec.ps1'
 [IO.File]::WriteAllText($exe, $c, (New-Object Text.UTF8Encoding($false)))
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
-& powershell -NoProfile -ExecutionPolicy Bypass -File $exe
+& powershell -NoProfile -ExecutionPolicy Bypass -File $exe ${args}
 `;
   return psOne(dec, timeout);
 }
@@ -179,10 +182,10 @@ async function cmdEval({ port = 9224, target, expr, file }) {
   for (const o of out) console.log('--- ' + o.url + '\n' + (typeof o.value === 'string' ? o.value : JSON.stringify(o.value, null, 2)));
 }
 
-async function cmdRun({ file, script }) {
+async function cmdRun({ file, script, args }) {
   const code = file ? readFileSync(file, 'utf8') : script;
   if (!code) throw new Error('need --file or --script');
-  console.log(psFile(code, 300000));
+  console.log(psFile(code, 300000, args || ''));
 }
 
 const STATE_EXPR = `JSON.stringify({
@@ -241,7 +244,7 @@ try {
     case 'tabs': await cmdTabs({ port: P }); break;
     case 'new': await cmdNew({ port: P, url: A.url }); break;
     case 'eval': await cmdEval({ port: P, target: A.target, expr: A.expr, file: A.file }); break;
-    case 'run': await cmdRun({ file: A.file, script: A.script }); break;
+    case 'run': await cmdRun({ file: A.file, script: A.script, args: A.args }); break;
     case 'watch': await cmdWatch({ port: P, url: A.url, times: Number(A.times || 12) }); break;
     case 'probe': await cmdProbe({ port: P, url: A.url }); break;
     default:
