@@ -19,7 +19,7 @@
 | 自动加载链路 | ✅ 扩展放在 `OCS Desktop\downloads\extensions\netclass-loader\`，OCS 每次启动浏览器自动扫描加载 |
 | shengsheng 自动化 | ✅ 实测：自动进入未完成课时 → 静音播放 → **实测 1.00x** → 播完自动下一节；随堂弹题自动作答 |
 | qiyang 自动化 | ✅ 实测：自动遍历章节 → 跳过已完成 → **实测 1.95~2.00x** → 播完自动下一章 |
-| 随堂弹题 | ✅ 实测抓到并作答（「感受性是（ ）」「表象是（ ）」），答错回填正确答案到本地题库 |
+| 随堂弹题 | ✅ **答案由 DeepSeek 给**（`ds-key.mjs` 配 key）；答错时用站点回传的正确答案补交；DS 不可用才回退本地题库/启发式 |
 | 本机模块服务 | ✅ 登录自启计划任务 `NetClassServer`（`http://127.0.0.1:17800`）；加载器每 2 分钟拉最新脚本 |
 
 **用户无需任何操作**：浏览器一起来，加载器扩展自动注册脚本，两站自动开跑。
@@ -135,6 +135,7 @@ netclass-20261013/
 │  ├─ ensure-devmode.mjs          开扩展开发者模式（诊断用）
 │  ├─ nc.mjs                      PC 侧控制台：up/tabs/new/eval/run/watch/probe
 │  ├─ status.mjs                  一条命令监控总览（隧道/页面/窗口/加载器/笔记本侧）
+│  ├─ ds-key.mjs                  DeepSeek key 管理（set/status/test；key 只进笔记本的扩展存储）
 │  ├─ tunnel.ps1                  SSH 端口转发（CDP 用）
 │  ├─ netclass-server.ps1         笔记本本机服务（17800）：提供最新脚本 + 回传
 │  ├─ netclass-deploy.ps1         上传/启停本机服务
@@ -238,8 +239,9 @@ await chrome.userScripts.register([{
 3. **等播放器就绪**（`readyState>=2 && duration>0`）后才接管：静音、按平台倍速播放
 4. 暂停/掉速自动恢复（就绪判定后生效）
 5. 播完自动下一节（先找站点「下一节」按钮，找不到就按目录顺序找下一个未完成项；**排除自己的面板按钮**）
-6. 随堂弹题：监听页面自身接口响应拿题 → 本地题库命中直接答 → 未命中走启发式 →
-   按 `insertUserAnswer` 返回的 `state`（2 对/3 错）判定，**答错把平台回传的正确答案写回题库**
+6. 随堂弹题：监听页面自身接口响应拿题 → **问 DeepSeek 拿答案**（key 由加载器注入）；
+   按 `insertUserAnswer` 返回的 `state`（2 对/3 错）判定，**答错把平台回传的正确答案补交**；
+   DeepSeek 不可用时才回退到本地题库/启发式
 
 **qiyang（三级实务观摩课程）**
 1. 课程页 → 收集录播章节 → 进入第一个未完成章节
@@ -273,8 +275,12 @@ await chrome.userScripts.register([{
    待再遇到新弹题时确认计分。
 5. **窗口归属**：当前两台浏览器由计划任务在登录会话里启动（可见），OCS 面板显示为未运行。
    若要让 OCS 托管：关掉窗口，在 OCS 点「运行」即可（扩展会自动加载，脚本自动注册并运行）。
-6. **webtrn（9226）配置没开扩展开发者模式**：那个 profile 里 `chrome.userScripts` 不可用，
+6. **随堂题作答依赖 DeepSeek**：key 用 `node scripts/ds-key.mjs set --key sk-xxx` 写进扩展存储
+   （三个 profile 各一份），答题时由加载器把 key 注入页面内存供页面直连 api.deepseek.com。
+   key 不进仓库、不写 localStorage；**但它在页面 MAIN world 里可见**（本环境唯一跑得通的组合，
+   原因见 HANDOVER §5.22）。DeepSeek 超时/无 key 时会自动回退本地题库与启发式，不会卡住弹窗。
+7. **webtrn（9226）配置没开扩展开发者模式**：那个 profile 里 `chrome.userScripts` 不可用，
    加载器注册必失败（日志：`only available for users in developer mode`）。当前不影响两门课，
    要在 webtrn 上跑脚本先用 `scripts/ensure-devmode.mjs` 给它开。
-7. **加载器去重已在 2026-10-14 修好**（`lastSig` 写入时机 + 扫描周期回到 2 分钟）；
+8. **加载器去重已在 2026-10-14 修好**（`lastSig` 写入时机 + 扫描周期回到 2 分钟）；
    以后遇到「日志每 60s 一条 registered」直接跑 `node scripts/status.mjs`，它会点名。

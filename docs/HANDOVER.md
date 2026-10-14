@@ -61,6 +61,7 @@ node scripts/ss-logs.mjs --port 9224 --secs 8      # 控制台日志
 │  · 平台适配器（shengsheng / qiyang）                            │
 │  · 视频策略：就绪闸门 → 静音 → 倍速 → 防暂停 → 结束推进          │
 │  · 卡死看门狗 / 顺序校验看护 / 随堂题三态处理                     │
+│  · 弹题作答：先问 DeepSeek（key 由加载器注入页面），答错用站点给的答案补交 │
 │  · 控制面板（右下角）+ 提示横幅（顶部，可关闭）                    │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -118,7 +119,9 @@ L1 挑未做过的课 → L2 挑未完成的子课程 → L3 处理课时。
 |---|---|
 | `status.mjs` | **一条命令看全貌**：隧道/CDP、两站页面状态（模块版本/开关/视频/弹题）、窗口布局、加载器去重签名、笔记本侧进程与服务与计划任务；有告警时退出码 1。加 `--no-ssh` 可跳过笔记本侧 |
 | `nc.mjs` | 远程执行总入口。`run --file/--script [--args '-Apply']` 在笔记本跑 PS；`eval --port --target --expr` 在页面里跑 JS；`new/tabs` 管标签页 |
+| `ds-key.mjs` | DeepSeek key 管理：`set --key sk-xxx` / `status` / `test`（key 只进笔记本的扩展存储，不进仓库、不进页面 localStorage） |
 | `build.mjs` / `build-loader.mjs` | 构建两个产物 |
+| `netclass-deploy.ps1 -Action push` | 一次推齐：server.ps1 / App.js / dist 产物 / 加载器扩展三件（改 background.js 后仍需 `loader-reload.mjs`） |
 | `tile.mjs` / `tile-verify.mjs` | 左右半屏平铺 / 复核窗口与页面状态 |
 | `probe-page.mjs` | 通用页面探针（视频状态、模块状态、弹题计数） |
 | `measure.mjs` | **实测播放倍速**（按媒体时钟走速算，不是读 `playbackRate` 属性） |
@@ -264,6 +267,8 @@ node scripts\nc.mjs run --file <列目录并 Get-FileHash 的脚本>
 | `nc.ss.parentUrl` / `nc.ss.currentCourse` | sessionStorage | shengsheng 层级返回地址 |
 | `nc.ss.coursesDone` | sessionStorage | shengsheng 已完成的课程 |
 | `lastSig` / `logRing` | chrome.storage.local | 加载器去重签名 / 日志环 |
+| `deepseekKey` / `deepseekModel` | chrome.storage.local（扩展） | DeepSeek 凭据与模型名（`scripts/ds-key.mjs set` 写入；每个 profile 各一份） |
+| `window.__NC_DS_KEY__` | 页面内存（MAIN world） | 由加载器随脚本注入的同上 key —— **只进内存**，刷新即消失，换 key 后重新 `set` 即可 |
 
 **要重跑一遍**：删掉 `netclass.done.<platform>`，或在面板点「启动」（会一并清掉）。
 
@@ -420,6 +425,31 @@ node scripts\nc.mjs run --file <列目录并 Get-FileHash 的脚本>
 **识别手段**：`node scripts/status.mjs` 会直接报「重复注册」（判据：`lastSig` 缺失 + 日志里 ≥2 次 `registered`）。
 **注意**：改完 `background.js` 必须重载扩展（§5.5），否则跑的还是缓存里的旧代码。
 
+### 5.22 让页面「问大模型」比想象中难：四条路全被环境堵死
+**背景**：弹题改成先问 DeepSeek（2026-10-14）。答题在页面里（要读 DOM、点选项、看站点回包），
+但请求不能直接把 key 摊在页面里，于是试了四种"干净"走法，**全部实测失败**：
+
+| # | 走法 | 结果 |
+|---|---|---|
+| ① | 自定义 world：`configureWorld({worldId:'netclass'})` + `register(world:'netclass')` | 抛 `Value must be one of MAIN, USER_SCRIPT`，**整批注册失败**，页面连脚本都没有（顺带把 §5.21 的去重也带崩：签名在 register 之后才写） |
+| ② | `USER_SCRIPT` 世界 + `messaging:true` + CustomEvent 桥接 | 桥能跑，但隔离世界里 `chrome.runtime.sendMessage` **仍是 undefined**（Chrome 137） |
+| ③ | manifest `externally_connectable` + 页面 `sendMessage`/`connect` | 页面里 API 确实出现了（`typeof === 'function'`），一发就 `Could not establish connection. Receiving end does not exist.`；**重启浏览器也一样** |
+| ④ | 页面 fetch `http://127.0.0.1:17800` 让本机服务中转 | `Failed to fetch`（mixed-content / Private Network Access 拦死） |
+
+**最后落地**：**SW 把 key 注入页面 + 页面直连 DeepSeek**。
+- SW 从 `chrome.storage.local` 取 key，随脚本一起下发：`register()` 时拼在脚本前面，
+  已开页面用 `userScripts.execute` 单独补一次（`window.__NC_DS_KEY__` / `window.__NC_DS_MODEL__`）；
+- 页面 `dsSend()` 直接 `fetch('https://api.deepseek.com/chat/completions')` —— **DeepSeek 放行 CORS**（实测：
+  带假 key 返回 401 而不是 CORS 报错）；
+- key 只进页面内存：不写 localStorage、不落盘、不进仓库。
+
+**代价与前提**：key 出现在 MAIN world，站点脚本理论上能读到（这是本环境里唯一跑得通的组合）。
+要在意这点，就得先换一个 `messaging` 正常的 Chrome。
+
+**key 管理**：`node scripts/ds-key.mjs set --key sk-xxx`（写进三个 profile 的扩展存储）、
+`status`（看是否已配置，掩码显示）、`test`（走 SW 直连打一发，验证 key 与网络）。
+换 key 后**不用**改任何文件，重新 `set` 一次即可（签名里带了 key 指纹，会自动重新下发）。
+
 ---
 
 ## 6. 站点事实速查
@@ -482,30 +512,25 @@ POST /api/exam/popQuiz/insertUserAnswer                           作答（回�
 1. **`--no-sandbox` 是必需的妥协**：计划任务上下文里 Chrome 沙箱起不来（exit=3 秒退）。
    若改从 OCS 面板点「运行」启动则不需要，但窗口就归 OCS 管。
 2. **油猴仍然是坏的**：本环境里它不执行任何用户脚本。OCS 脚本列表里的条目仅作备用。
-3. **多选题：路径已实现，但从未跑过真实样本**（不是「没处理」，是「没验证」）。
-   相关代码都在，链路上是通的：
-   - 类型识别：`const type = /多选|不定项/.test(typeTxt) ? 2 : …`（读 `.question-type` 的文案）
-   - 多选重新推断：`ranked.filter(r => r.s > 0.5).map(r => r.name)` → `join(',')`
-   - 作答：`g.answer.split(',')` → 命中的选项**全部** `click()`
-   - 平台回传答案写回题库时做了归一化：`"AB"` → `"A,B"`
-
-   **待验证的两点**：
-   - **类型识别是单点依赖**——如果站点在那道题上没渲染 `.question-type`（或文案不是「多选/不定项」），
-     `type` 会落到 1（单选），启发式就只会挑一个选项。这是最可能出问题的地方。
-   - `heuristic-multi` 的阈值（`s > 0.5`）没在真实多选题上校准过。
-   建议：拿到一道真实多选（走错一次拿到平台答案即可）后，把 `type` 判定和最终点击的选项数打日志核对。
-4. **直播课不处理**（qiyang 36 个）。
-5. **窗口归属**：当前浏览器由计划任务在登录会话里启动（可见），OCS 面板显示为未运行。
+3. **多选题：类型识别单点依赖 `.question-type` 的文案**。作答路径本身是通的（多选会按
+   `join(',')` 全部点击），2026-10-14 起答案由 DeepSeek 给（见 §5.22），**但"是不是多选"仍靠
+   页面里 `.question-type` 是否渲染出「多选/不定项」**：取不到就会退成单选，DeepSeek 也只会给一个字母。
+   拿到一道真实多选题时，日志里核对 `type` 与最终点击的选项数即可确认。
+4. **DeepSeek 答题的边界**：key 由加载器注入页面内存（§5.22），所以**key 在页面里可见**；
+   模型答错时仍走原有兜底——站点回传正确答案 → 点「再试一次」→ 用平台答案补交；
+   DeepSeek 不可用（无 key / 网络不通 / 超时 20s）时自动回退到本地题库与启发式，不会卡住弹窗。
+5. **直播课不处理**（qiyang 36 个）。
+6. **窗口归属**：当前浏览器由计划任务在登录会话里启动（可见），OCS 面板显示为未运行。
    要让 OCS 托管：关掉窗口，在 OCS 点「运行」。
-6. **历史残留计划任务**：`NetClassProbe*` / `NetClassUIA*` / `NetClassFreshTM` / `NetClassMatrix` /
+7. **历史残留计划任务**：`NetClassProbe*` / `NetClassUIA*` / `NetClassFreshTM` / `NetClassMatrix` /
    `NetClassTestNoExcept` 共 15 个已于 2026-10-14 清理，清理脚本固化在
    `runs/remote/cleanup-residue-tasks.ps1`（默认 dry run，`--args '-Apply'` 才真删；
    不碰 `NetClassVis-*`、`NetClassServer` 与任何 `TaskMesh-*`）。
    笔记本上 `TaskMesh-*` 侧仍有若干残留任务（`TaskMesh-Learning-Probe-*` 等），**属另一个项目，未处理**。
-7. **webtrn 配置没开扩展开发者模式**：9226 那个 profile 的加载器日志是
+8. **webtrn 配置没开扩展开发者模式**：9226 那个 profile 的加载器日志是
    `'userScripts' API is only available for users in developer mode`，注册必失败；当前 `MATCHES`
    只有两个课程域，所以不影响现状。要在 webtrn 上跑脚本，先用 `ensure-devmode.mjs` 给它开。
-8. **README 部分内容已过时**（仍写 shengsheng 1.00x、缺后面 10 来个修复）。
+9. **README 部分内容已过时**（仍写 shengsheng 1.00x、缺后面 10 来个修复）。
    以本文档和 `git log` 为准。
 
 ---
