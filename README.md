@@ -284,3 +284,8 @@ await chrome.userScripts.register([{
    要在 webtrn 上跑脚本先用 `scripts/ensure-devmode.mjs` 给它开。
 8. **加载器去重已在 2026-10-14 修好**（`lastSig` 写入时机 + 扫描周期回到 2 分钟）；
    以后遇到「日志每 60s 一条 registered」直接跑 `node scripts/status.mjs`，它会点名。
+
+9. **IP 池（出口代理）—— 已调研，暂未启用**：多账号防关联用，方案与成本写在
+   ~/.dsh/skills/netclass-course-orders/references/ip-pool.md（拨号 VPS ¥6/天起 / 住宅 ¥3~10/GB /
+   免费池存活率约 8% 且不得承载账号流量）。当前**全部走本机出口**（脚本与浏览器进程均无 proxy 参数）；
+   触发条件与 6 步启用清单见该文档与 docs/HANDOVER.md §5.33。
