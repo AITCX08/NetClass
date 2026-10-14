@@ -1399,6 +1399,46 @@
     return true;
   }
 
+  // ------------------------------------------------------------ 课程进度与预估（面板显示）
+  /**
+   * 从课时目录算本课程的完成度与预估剩余时间：
+   *   .lesson-item 行 → 状态（已完成/已学完/观看中/已观看 N%/未开始）+ 时长（mm:ss 或 hh:mm:ss）
+   *   remainSec = 各未完成课时的剩余时长之和（正在看的那节按剩余部分算）
+   *   etaSec   = remainSec / 当前倍速（**本页视角**；整机时间还要除以并行路数，见 parallel-probe）
+   */
+  function courseProgress() {
+    try {
+      const toSec = s => { if (!s) return 0; const p = String(s).split(':').map(Number); return p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : p[0] * 60 + p[1]; };
+      let rows = Array.from(document.querySelectorAll('.lesson-item'));
+      if (!rows.length) rows = Array.from(document.querySelectorAll('li[class*=lesson]')).filter(e => !/lesson-status/.test(String(e.className)));
+      if (!rows.length) return null;
+      const v = pickVideo();
+      const items = rows.map(e => {
+        const t = (e.innerText || '').replace(/\s+/g, ' ').trim();
+        const st = (t.match(/(已完成|已学完|观看中|学习中|已观看\s*\d+%?|未开始|待学习)/) || [])[1] || '';
+        const durs = t.match(/(\d{1,2}:\d{2}:\d{2}|\d{1,2}:\d{2})/g) || [];
+        const pct = (t.match(/已观看\s*(\d+)%/) || [])[1];
+        return { done: /已完成|已学完/.test(st), cur: /观看中|学习中/.test(st), pct: pct ? Number(pct) : null, sec: toSec(durs[durs.length - 1] || '') };
+      });
+      const total = items.length, done = items.filter(i => i.done).length;
+      let remainSec = 0, unknown = 0;
+      for (const i of items) {
+        if (i.done) continue;
+        if (i.cur && v && v.duration) { remainSec += Math.max(0, v.duration - v.currentTime); continue; }
+        if (i.pct != null && i.sec) { remainSec += i.sec * (1 - i.pct / 100); continue; }
+        if (!i.sec) unknown++;
+        remainSec += i.sec;
+      }
+      const rate = (typeof effRate === 'function' ? effRate() : 1.5) || 1.5;
+      return { total, done, pct: total ? Math.round(done / total * 100) : 0, remainSec, etaSec: remainSec / rate, rate, unknown };
+    } catch (_) { return null; }
+  }
+  function fmtDur(sec) {
+    if (sec == null || isNaN(sec)) return '?';
+    const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
+    return h ? (h + 'h' + (m ? m + 'm' : '')) : (m + 'min');
+  }
+
   // ------------------------------------------------------------ 控制面板
   let panelEl = null;
   function mountPanel() {
@@ -1412,8 +1452,13 @@
       const vs = v ? `${Math.floor(v.currentTime || 0)}s/${Math.floor(v.duration || 0)}s x${v.playbackRate}${v.paused ? ' ⏸' : ' ▶'}` : '无视频';
       const BTN = 'background:#2b2b34;color:#eaeaea;border:1px solid #4d4d5a;border-radius:5px;padding:3px 9px;font:12px/1.5 inherit;display:inline-block;cursor:pointer';
       const btn = (a, label) => `<button data-a="${a}" style="${BTN}">${label}</button>`;
+      const pr = courseProgress();
+      const prog = pr
+        ? `进度 <b>${pr.pct}%</b> (${pr.done}/${pr.total}) · 剩 ${fmtDur(pr.remainSec)} → 约 <b>${fmtDur(pr.etaSec)}</b>${pr.unknown ? ` <span style="opacity:.5">(${pr.unknown}节无时长)</span>` : ''}`
+        : '进度 —';
       panelEl.innerHTML =
         `<div style="font-weight:600">NetClass ${VERSION} <span style="opacity:.55">${PLATFORM}</span> <span style="opacity:.55;color:${state.allDone ? '#6ee7a8' : 'inherit'}">${state.allDone ? '已完成' : (CFG.enabled ? '运行' : '暂停')}</span></div>
+         <div style="opacity:.9">${prog}</div>
          <div style="opacity:.8">视频 ${state.video.seen} · 结束 ${state.video.ended} · 倍速修正 ${state.video.rateFixes}</div>
          <div style="opacity:.8">弹题 见${state.quiz.seen} 答${state.quiz.answered} ✔${state.quiz.correct} ✘${state.quiz.wrong} · DS ${state.quiz.dsOk}/${state.quiz.dsAsk}${state.quiz.dsErr ? ' 失败' + state.quiz.dsErr : ''} · 库${Object.keys(bank).length}</div>
          <div style="opacity:.8">${vs}</div>
@@ -1492,7 +1537,8 @@
     apis: () => apiLog.slice(-60), feed: () => quizFeed.slice(-5), bank: () => bank,
     /** 调试用：手动问一道题（形如 {type:1,name:'...',optionList:[{name:'A',data:'...'}]}） */
     askDs: q => dsAnswer(q),
-    /** webtrn 写路径（发帖/回帖/作业）—— 订单流程用；别的平台为 null */
+    /** 本课程进度与预估（面板同源）：{pct, done, total, remainSec, etaSec} */
+    progress: () => courseProgress(),
     webtrn: (P_ADAPTER && P_ADAPTER.id === 'webtrn') ? P_ADAPTER : null,
     headers: (kw) => kw ? reqHeaders.filter(r => r.url.includes(kw)).slice(-5) : reqHeaders.slice(-15),
     login: () => loginInfo,
