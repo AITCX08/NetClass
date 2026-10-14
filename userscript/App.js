@@ -1,6 +1,7 @@
 /* NetClass 实现模块（由网课壳热加载）
  * 目标站点：edu.shengshengketang.com / study.bjqiyang.com
- * 职责：视频自动播放·静音·倍速·掉速纠正·结束自动下一节；随堂弹题自动作答；本地题库；控制面板。
+ * 职责：视频自动播放·静音·倍速·掉速纠正·结束自动下一节；随堂弹题自动作答（DeepSeek 给答案，
+ *      答错时用站点回传的正确答案补交）；控制面板。
  * 约束：只做页面内的正常播放与页面自身表单作答；不伪造学时、不代考、不绕过验证码/人脸/短信。
  * 接口（供壳热重载与外部控制端调用）：
  *   window.NetClass = { version, platform, cfg, state, dispose(), ... }
@@ -11,7 +12,7 @@
   // 热重载时先回收上一个实例
   try { window.NetClass && window.NetClass.dispose && window.NetClass.dispose(); } catch (_) { }
 
-  const VERSION = '0.4.0';
+  const VERSION = '0.5.0';
   const NS = '[NetClass]';
   const HOST = location.hostname;
   const PLATFORM = /shengshengketang/i.test(HOST) ? 'shengsheng'
@@ -26,7 +27,9 @@
     enabled: true, autoPlay: true, mute: true, rate: 1, autoNext: true, autoQuiz: true,
     quizDelayMs: 700, antiPause: true, panel: true, report: false,
     userRate: false, rateQiyang: 2, rateShengsheng: 1.5,
-    reportBase: 'http://192.168.1.6:17999', probe: false
+    reportBase: 'http://192.168.1.6:17999', probe: false,
+    // 弹题作答由 DeepSeek 负责（经加载器扩展的 SW 转发，key 只存在笔记本本地）
+    dsEnable: true, dsModel: 'deepseek-chat', dsTimeoutMs: 20000
   };
   const CFG_KEY = 'netclass.cfg.v3';
   const BANK_KEY = 'netclass.bank.v3';
@@ -41,7 +44,7 @@
   const state = {
     version: VERSION, platform: PLATFORM, host: HOST, startedAt: now(), loopTicks: 0,
     video: { seen: 0, ended: 0, rateFixes: 0, resumed: 0 },
-    quiz: { seen: 0, answered: 0, correct: 0, wrong: 0, bankHit: 0, bankMiss: 0 },
+    quiz: { seen: 0, answered: 0, correct: 0, wrong: 0, bankHit: 0, bankMiss: 0, dsAsk: 0, dsOk: 0, dsErr: 0 },
     next: { clicks: 0, misses: 0 }, errors: [], route: location.href, allDone: false, doneAt: null
   };
   window.__NETCLASS_STATE__ = state;
@@ -207,7 +210,98 @@
   function flushBank() { if (!bankDirty) return; try { localStorage.setItem(BANK_KEY, JSON.stringify(bank)); bankDirty = false; } catch (_) { } }
   timers.push(setInterval(flushBank, 10000));
 
-  // ------------------------------------------------------------ 作答启发
+  // ------------------------------------------------------------ DeepSeek 作答（主路径）
+  /**
+   * 直接由页面调 DeepSeek：key 由加载器扩展在注入脚本时一并送进 MAIN world
+   * （window.__NC_DS_KEY__ —— 只进内存，不写 localStorage、不落盘、不进仓库）。
+   *
+   * 为什么不用更"干净"的走法（2026-10-14 全部实测过，别再试）：
+   *   ① 扩展自定义 world：register/execute 只接受 MAIN/USER_SCRIPT，直接抛错；
+   *   ② USER_SCRIPT + messaging:true：隔离世界里 chrome.runtime.sendMessage 是 undefined；
+   *   ③ manifest externally_connectable + 页面 sendMessage/connect：报
+   *      "Could not establish connection"，重启浏览器也一样；
+   *   ④ 页面 fetch http://127.0.0.1:17800 让本机服务中转：mixed-content/PNA 拦死。
+   * 页面直连 api.deepseek.com 是通的（DeepSeek 放行 CORS），所以选了这条。
+   */
+  function dsSend(payload, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const key = (typeof window !== 'undefined' && window.__NC_DS_KEY__) || '';
+      if (!key) return reject(new Error('页面里没有 DeepSeek key（加载器没下发？跑 node scripts/ds-key.mjs set --key ... 后刷新页面）'));
+      const model = window.__NC_DS_MODEL__ || CFG.dsModel || 'deepseek-chat';
+      const sys = '你是网课随堂题的答题助手。只输出选项字母，不要解释。'
+        + '多选题输出所有正确选项字母，用英文逗号分隔（如 B,D）。判断题按选项字母输出。';
+      const user = '题型：' + String(payload.type || '单选题')
+        + '\n题目：' + String(payload.question || '').slice(0, 900)
+        + '\n选项：\n' + String(payload.options || '').slice(0, 3000) + '\n\n只输出字母。';
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), timeoutMs || 20000);
+      fetch('https://api.deepseek.com/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
+        body: JSON.stringify({
+          model,
+          temperature: 0,
+          max_tokens: 32,
+          messages: [{ role: 'system', content: sys }, { role: 'user', content: user }]
+        }),
+        signal: ctl.signal
+      }).then(r => {
+        if (!r.ok) throw new Error('DeepSeek HTTP ' + r.status);
+        return r.json();
+      }).then(j => {
+        clearTimeout(t);
+        const txt = String((j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '').trim();
+        const tokens = (j.usage && j.usage.total_tokens) || '?';
+        log('quiz: DeepSeek 返回', txt.slice(0, 20), 'tokens=' + tokens);
+        txt ? resolve(txt) : reject(new Error('DeepSeek 返回空'));
+      }).catch(e => {
+        clearTimeout(t);
+        reject(e.name === 'AbortError' ? new Error('DeepSeek 超时') : e);
+      });
+    });
+  }
+
+  /** 把题目与选项压成一次问答；只接受落在选项里的字母，避免模型自由发挥 */
+  async function dsAnswer(q) {
+    const typeName = q.type === 2 ? '多选题（可能有多个正确答案）' : q.type === 3 ? '判断题' : '单选题';
+    const names = [];
+    const lines = [];
+    for (const o of (q.optionList || [])) {
+      const nm = String(o.name || '').replace(/[.\s]/g, '').toUpperCase().slice(0, 4);
+      if (!nm) continue;
+      names.push(nm);
+      lines.push(nm + '. ' + String(o.data || '').trim().slice(0, 200));
+    }
+    if (!lines.length) throw new Error('题目没有可读选项');
+    const raw = await dsSend({
+      type: typeName,
+      question: String(q.name || '').replace(/\s+/g, ' ').trim().slice(0, 800),
+      options: lines.join('\n').slice(0, 3000)
+    }, CFG.dsTimeoutMs);
+    const letters = (raw.toUpperCase().match(/[A-H]/g) || []).filter(l => names.includes(l));
+    const pick = [...new Set(letters)];
+    if (!pick.length) throw new Error('模型返回无法解析：' + raw.slice(0, 60));
+    if (q.type === 2) return pick.sort().join(',');
+    if (q.type === 3) return pick[0];            // 判断题在站点里通常是 对/错 两个选项
+    return pick[0];
+  }
+
+  /** 取答案：DeepSeek 优先 → 题库缓存 → 启发式兜底（后两者只在前者不可用时才用） */
+  async function inferAnswer(q) {
+    if (CFG.dsEnable) {
+      state.quiz.dsAsk++;
+      try {
+        const a = await dsAnswer(q);
+        if (a) { state.quiz.dsOk++; log('quiz: DeepSeek 给出答案', a, '|', String(q.name || '').slice(0, 40)); return { answer: a, why: 'deepseek', conf: 0.9 }; }
+      } catch (e) {
+        state.quiz.dsErr++;
+        warn('DeepSeek 取答案失败，回退本地推断：' + ((e && e.message) || e));
+      }
+    }
+    return guess(q);
+  }
+
+  // ------------------------------------------------------------ 作答启发（兜底）
   function guess(q) {
     const opts = (q && q.optionList) || [];
     if (!opts.length) return { answer: '', why: 'no-option', conf: 0 };
@@ -809,7 +903,7 @@
         this.__domOpts = opts;
       } else this.__domOpts = null;
 
-      const g = guess(q);
+      const g = await inferAnswer(q);
       if (!g.answer) { warn('无法本地推断答案，交本人处理'); report('quiz-manual', { url: location.href, q: String(q.name).slice(0, 120) }); return; }
       const picks = g.answer.split(',');
       const opts = this.__domOpts || Array.from(box.querySelectorAll('.option-item,[class*="option-item"]')).map(el => ({
@@ -1066,7 +1160,7 @@
       panelEl.innerHTML =
         `<div style="font-weight:600">NetClass ${VERSION} <span style="opacity:.55">${PLATFORM}</span> <span style="opacity:.55;color:${state.allDone ? '#6ee7a8' : 'inherit'}">${state.allDone ? '已完成' : (CFG.enabled ? '运行' : '暂停')}</span></div>
          <div style="opacity:.8">视频 ${state.video.seen} · 结束 ${state.video.ended} · 倍速修正 ${state.video.rateFixes}</div>
-         <div style="opacity:.8">弹题 见${state.quiz.seen} 答${state.quiz.answered} ✔${state.quiz.correct} ✘${state.quiz.wrong} 库${Object.keys(bank).length}</div>
+         <div style="opacity:.8">弹题 见${state.quiz.seen} 答${state.quiz.answered} ✔${state.quiz.correct} ✘${state.quiz.wrong} · DS ${state.quiz.dsOk}/${state.quiz.dsAsk}${state.quiz.dsErr ? ' 失败' + state.quiz.dsErr : ''} · 库${Object.keys(bank).length}</div>
          <div style="opacity:.8">${vs}</div>
          <div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
            ${btn('toggle', CFG.enabled ? '暂停' : '启动')}
@@ -1141,6 +1235,8 @@
     vid: pickVideo, next: goNext, poll: () => P_ADAPTER && P_ADAPTER.poll(),
     rate(r) { CFG.rate = r; saveCfg(); const v = pickVideo(); if (v) v.playbackRate = r; return r; },
     apis: () => apiLog.slice(-60), feed: () => quizFeed.slice(-5), bank: () => bank,
+    /** 调试用：手动问一道题（形如 {type:1,name:'...',optionList:[{name:'A',data:'...'}]}） */
+    askDs: q => dsAnswer(q),
     headers: (kw) => kw ? reqHeaders.filter(r => r.url.includes(kw)).slice(-5) : reqHeaders.slice(-15),
     login: () => loginInfo,
     quizElements() {
