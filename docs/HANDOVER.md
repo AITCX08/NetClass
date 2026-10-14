@@ -523,6 +523,26 @@ w.setTimeout(function(){ btn.click(); }, 30);   // 求值立刻返回，提交�
 `/learnspace/learn/homework/blue/student/homework_index.action?...` —— 作业在那边交。
 作业形态：`homework_doing.action?params.itemId=<id>`，「以附件形式上传」，有 `保存草稿` 与 `提交`（提交后不可改）。
 
+### 5.28 webtrn 上传类活动的正确提交姿势（2026-10-14 打通）
+**上传控件只给「当前步骤」初始化**：页面上 8 个 `.act_uploadArea`，但通常只有 1 个真正绑定了 uploadify
+（`input[type=file]` 挂在 `#container_<itemId>` 里）。要传某个活动项，先点它的步骤 TAB
+（`setTab('tabs',N,4,'<itemId>')`），必要时再手动 `showUpload(itemId,0,1,0,'',true)` + `initUpload(itemId)` 把控件唤起来。
+
+**提交入口是 `uploadResource(themeId)`，不是 `saveResource(themeId)`**：后者是"编辑已有资源"用的
+（要 `resourceId`，新传的没有 → 报"修改资源时出错"）。正确顺序：
+① 点「上传我的资源」→ ② `DOM.setFileInputFiles` 塞文件 → ③ 补发 input/change →
+④ 出现暂存行（`div.a_u_row0.res_<itemId>_o_<uploadId>`，显示 100%）后**立刻**填行级字段
+`select[name=subject_/stage_/type_<itemId>]` + `input[name=title_<itemId>]` → ⑤ 调 `uploadResource(themeId)`。
+成功后平台弹 **「上传成功！」**，活动页「资源数」+1（实测 68 → 70，两项都成）。
+一条命令：`node scripts/webtrn-upload-submit.mjs --port 9226 --item <itemId> --file <笔记本绝对路径> --title "…"`
+
+### 5.29 learnspace 作业提交的最后一下：`div.small_submit_comfirm`
+作业页（`homework_doing.action`）点「提交」后弹**站内自绘**对话框：
+`DIV.small_pop > DIV.small_pop_in > DIV.small_submit > DIV.small_submit_comfirm`
+（文案"作业提交后，不能修改 是否提交？ 确认 取消"）。它不吃 `window.confirm` 覆盖，
+也不一定吃 `el.click()`（实测点了仍停在对话框）→ 下一手改 **CDP `Input.dispatchMouseEvent` 真实鼠标点击**
+该元素坐标。附件与保存草稿都正常（上传后显示 `附件：xxx.docx（40.36K）`）。
+
 ---
 
 ## 6. 站点事实速查
