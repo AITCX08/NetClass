@@ -85,8 +85,14 @@ async function ensureDecoder() {
     const out = spawnSync(process.execPath, [join(HERE, 'cx-inject-lib.mjs'), '--port', String(PORT), '--lib', 'runs/cx/glyph-lib36.json'], { cwd: REPO, encoding: 'utf8' });
     if (out.status !== 0) return { err: 'lib-inject-failed: ' + (out.stderr || '').slice(0, 160) };
   }
-  r = await c.ev('typeof window.__cxDecode');
-  if (r !== 'object') await c.ev(file('runs/cx/cx-decode.js'));
+  // ★★ 解码器必须按【版本号】判断要不要重注入（2026-10-15 主线修，同一个坑踩过两次）：
+  //   旧写法只判断 `typeof __cxDecode !== 'object'` —— 页面上有旧版时**永远不重注入**，
+  //   于是"改了 cx-decode.js 但页面上跑的还是旧代码"，修复永远不生效（实测：改了 shape() 的
+  //   格式兼容后题面依旧乱码，查了半天才发现根本没注入）。
+  //   DECODE_V 必须与 runs/cx/cx-decode.js 里的 `__cxDecode = { v: N }` 一致。
+  const DECODE_V = 2;
+  r = await c.ev('(window.__cxDecode && window.__cxDecode.v) || 0');
+  if (Number(r) !== DECODE_V) { await c.ev(file('runs/cx/cx-decode.js')); await sleep(300); }
   const t = await c.ev('JSON.stringify(window.__cxDecode.text("恣咰咧"))');
   return { ok: true, probe: t };
 }
