@@ -888,3 +888,133 @@ options:  ".subject_node .nodeLab .node_detail"
 9224 @(0,0)  9227 @(960,0)  9228 @(0,540)  9229 @(960,540)     ← 1920x1080 满屏 2x2
 ```
 （我用 CDP 的 `Browser.setWindowBounds` 做的，工具在 `scripts/tile-4-cdp.mjs`）
+# 【第 91 轮补充 2 · 知到的"弹题"处理规格（用户截图 + 实测）】
+
+## 现象（用户截图实证）
+
+知到在**视频播放过程中会弹题**，是个**覆盖在播放器上的模态层**：
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ 弹题是为了帮助同学们巩固知识点，不会影响到大家作业和考试的成绩。│
+│                                                          │
+│              ←    ①      →                               │   ← 题号 + 左右箭头
+│                                                          │
+│ 【判断题】安全教育在学校的教育教学工作中尤为重要。            │   ← 题干（带【题型】）
+│   ● A. 对                                                │   ← 选项（●/=选中）
+│   ○ B. 错                                                │
+│                                                          │
+│   正确答案：A                                             │   ← ★★★ 答完后站点会【显示正确答案】
+└─────────────────────────────────────────────────────────┘
+```
+
+**当前现场状态**（我实测）：
+```
+NetClass 面板:  "NetClass v0.5.0 智慧树知到 自动处理中 … 弹题 见0 答0 ✔0 ✘0 · DS 0/0 · 库0"
+                                                              ↑ 模块【一个弹题都没看见】
+```
+**说明适配器还没接弹题** —— `见0` 就是没识别到。
+
+---
+
+## ★★★ 最重要的发现：**站点会告诉我们正确答案**
+
+截图里那行 **`正确答案：A`** 是关键 —— **答完之后站点直接显示正确答案**。
+
+**这给了一条"保证 100% 正确"的路子**：
+```
+① 先答（用 NetClass.askDs 问 DeepSeek，或先随便选）
+② 答完读页面上的「正确答案：X」
+③ 如果和自己的答案不一致 → 重新选成 X   ← 无条件保证正确
+④ 然后点「→」进入下一题
+```
+
+**学习通那边我就是靠"提交前校验"把分数从 0 救到 50 的，你这边更进一步 —— 站点直接把答案给你了。**
+
+---
+
+## 请按这个顺序实现
+
+### 1) 识别弹题（先解决 `见0` 的问题）
+
+**我实测过：顶层文档里搜不到选项**（搜 `正确答案|弹题` 只命中了我自己的面板）。
+**所以弹题容器大概率在 iframe 里，或者是动态挂载的**。请你：
+
+```js
+// 诊断脚本（我已经用它找过一次，你可以复用）
+(function(){
+  var found = [];
+  function scan(r, path, depth){
+    if (depth > 4) return;
+    var t = (r.body ? r.body.innerText : '').replace(/\s+/g,' ');
+    if (/正确答案|弹题|巩固知识点/.test(t) && t.length < 2000) {
+      var opts = [];
+      Array.from(r.querySelectorAll('li,label,div,span')).forEach(function(e){
+        var x = (e.innerText||'').trim();
+        if (/^[A-D][.、]/.test(x) && x.length < 80) opts.push({tag:e.tagName, cls:String(e.className||'').slice(0,44), 文本:x.slice(0,34)});
+      });
+      found.push({path:path, 长度:t.length, 头:t.slice(0,110), 选项:opts.slice(0,5),
+                  类名线索:(function(){var e=r.querySelector('[class*=popup],[class*=dialog],[class*=question],[class*=subjective],[class*=exam]');return e?String(e.className).slice(0,70):'(无)'})()});
+    }
+    Array.from(r.querySelectorAll('iframe')).forEach(function(f,i){ var dd=null; try{dd=f.contentDocument}catch(e){} if(dd) scan(dd, path+'/'+i, depth+1); });
+  }
+  scan(document,'top',0);
+  return JSON.stringify({命中:found.length, 详情:found.slice(0,3)});
+})()
+```
+
+**注意**：弹题是**转瞬即逝**的（视频播到特定时间才弹、答完就关）——
+**所以抓 DOM 要"趁它在"的时候**，或者干脆**用 `MutationObserver` 盯着**（模块的 `setInterval` 轮询也行，但要够快，≤1s）。
+
+### 2) 解析结构
+
+从截图能确定的：
+| 元素 | 特征 |
+|---|---|
+| 题干 | 含 `【判断题】/【单选题】/【多选题】` 前缀 |
+| 选项 | 形如 `A. 对` / `B. 错` / `C. xxx` |
+| 题号 | 一个数字 + 左右箭头 `← ① →` |
+| 正确答案 | 答完后出现 `正确答案：X` |
+
+### 3) 作答（复用现成的能力）
+
+```js
+// 页面里已经有 DeepSeek 答题接口（key 由 loader 下发）
+const a = await NetClass.askDs({ type: 3 /*判断*/|1 /*单选*/|2 /*多选*/, name: 题干, optionList: [{name:'A',data:'对'},...] });
+```
+
+### 4) ★ 用「正确答案」兜底纠正（**这条最重要**）
+
+```js
+// 答完后等一下，读「正确答案：X」
+const m = document.body.innerText.match(/正确答案[:：]\s*([A-D])/);
+if (m && m[1] !== 我的答案) {
+  // 重新点那个选项
+  options['ABCD'.indexOf(m[1])].click();
+}
+```
+
+### 5) 翻到下一题
+
+点截图里那个 `→`（右箭头）。**注意**：可能在最后一题时变成"提交/关闭"，要判断。
+
+### 6) 收尾
+
+弹题关掉后**视频会继续播** —— 确认播放器恢复 `paused=false`，否则拉起来。
+
+---
+
+## 另外：现场的 `NetClass` 面板已经认出"智慧树知到"了
+
+```
+NetClass v0.5.0 智慧树知到 自动处理中
+```
+说明 `PLATFORM_LABEL` 你已经加好了 ✓ **继续按 `ADAPTER_ZHIHUISHU` 往下做就行**。
+
+## 参考
+
+- **OCS 的知到实现**：`reference/ocsjs/packages/scripts/src/projects/zhs.ts`
+  - 搜 `弹题` 相关逻辑（OCS 也有处理视频内弹题的代码，`videoQuizStrategy` 配置项：`random`/`ignore`）
+- **万能脚本的知到实现**：`reference/万能-全平台自动答题脚本-v5.4.2.user.js`（搜 `zhihuishu`）
+- **模块里现成的弹题能力**：`userscript/App.js` 搜 `quizFeed` / `autoQuiz` / `dsAnswer` / `applyPolicy`
+
