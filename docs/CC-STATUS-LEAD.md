@@ -783,3 +783,108 @@ options:  ".subject_node .nodeLab .node_detail"
 **顺带**：平铺用 CDP 的 `Browser.setWindowBounds` 做的（Win32 `MoveWindow` 在控制端找不到这些窗口）——
 工具在 `scripts/tile-4-cdp.mjs`，**如果你要给 9229 单独调窗口位置，用它**。
 
+
+---
+
+# ✅【第 91 轮补充 · 重大进展】知到的"用户脚本方式"已经打通 —— 你只剩写适配器
+
+## 根因找到了：**9229 的浏览器开发者模式是关的**
+
+```
+chrome.userScripts -> ERR: The 'userScripts' API is only available for users in developer mode
+```
+
+**MV3 的 `chrome.userScripts` 必须在开发者模式下才可用。** 所以之前：
+- ✅ loader 的 `MATCHES` / `host_permissions` **都已含 `https://*.zhihuishu.com/*`**
+- ✅ 扩展也**部署到位**（`manifest v1.5.0`，`bundled.js` 118KB）
+- ❌ **但注册用户脚本的 API 不可用 → 注入静默失败 → 页面上什么都没有**
+
+**我已经开了开发者模式**（用 `scripts/ensure-devmode.mjs --port 9229 --test <知到页>`），
+**现在刷新页面后模块已成功注入**：
+
+```
+知到 (9229): {"NetClass":"object", "版本":"0.5.0", "设置面板API":"object", "面板":true}
+学习通(9227): {"NetClass":"object", "版本":"0.5.0", "面板":true}    ← 未受影响
+```
+
+## 这对你意味着什么（**重要，能省你很多事**）
+
+**知到现在跑的是"页面内模块"，等价于用户脚本 —— 页面侧逻辑【完全没有 CDP 特征】。**
+
+**所以"反检测"这件事，对页面侧的活来说已经不是问题了**：
+- 播放/切节/答题/提交 **都走页面内模块**（`NetClass`）→ 站点视角就是页面自己的 JS
+- **只有你在控制器上用 `nc.mjs eval` 做调试时才产生 CDP 调用** —— 那只是开发期，正式跑起来不需要
+
+**⚠️ 所以请把"驱动逻辑写进页面侧"，而不是用 CDP 从外部驱动** —— 这和 OCS/万能 是同一个架构。
+
+## 你现在只剩这一件事：写 `ADAPTER_ZHIHUISHU`
+
+**框架已经在了**（面板、设置、DeepSeek 答题接口、视频策略、进度统计都能复用），你只需要加知到特有的：
+
+### ① 平台识别
+- `userscript/App.js` 顶部 `PLATFORM` 判定加 `zhihuishu`（域名含 `zhihuishu.com`）
+- `PLATFORM_LABEL` 加中文名「知到」
+- `const P_ADAPTER = ...` 链条里接上 `ADAPTER_ZHIHUISHU`
+
+### ② 适配器要实现的接口（照 `ADAPTER_CHAOXING` 的结构抄）
+```js
+const ADAPTER_ZHIHUISHU = {
+  key: 'zhihuishu',
+  pageKind() { ... },        // 当前是 视频页/目录页/作业页
+  player() { return document.querySelector('video'); },
+  progressInfo() { ... },    // ★ 完成判据（见下）
+  poll() { ... },            // 定时检查 + 推进
+  onResponse() { ... },      // 拦截接口（可选）
+};
+```
+
+### ③ ★ 完成判据（**照学习通那套**，别自己猜）
+学习通那边我用的是 `span.roundpoint` 的类名（`blue`=已完成 / `orange01 jobCount`=未完成）。
+**知到你要自己去 DOM 里找等价物**，找到后：
+- **写进代码注释**
+- **追加进技能的 `references/platforms.md`**（照 chaoxing/ccjyxy 那两章的格式）
+
+### ④ 视频播放（知到的关键点）
+- **倍速走站点自己的 UI**（`ocsjs/.../zhs.ts:115` 的 `switchPlaybackRate`）：
+  ```js
+  document.querySelector('.speedList [rate="1.5"]').click();
+  ```
+  站点只有 `1.5 / 1.25 / 1.0` 三档（实测），**不要直接改 `video.playbackRate`**
+- 播放器是短命 SPA 组件 → **用页内常驻循环（`setInterval`）盯住**，不要靠事件
+
+### ⑤ 作业/考试（"完整适配"的核心增量）
+**万能脚本的方案（`reference/万能...js:8563-8606`）**：
+```js
+// 用 JSON.parse 钩子拦截题目（比抓 DOM 可靠）
+JSONParseHook(function(o){
+  if (o.rt && o.rt.examBase && o.rt.examBase.workExamParts.length > 0) {
+    GLOBAL.json = o.rt.examBase.workExamParts.map(part =>
+      part.questionDtos.map(item => format(item))   // {qid, question, type, options_id, options}
+    ).flat();
+  }
+});
+// URL 特征
+/stuExamWeb\.html|webExamList\/dohomework\/|webExamList\/doexamination\//
+// DOM 兜底选择器
+root: ".examPaper_subject"
+question: ".subject_describe div,.smallStem_describe p"
+options:  ".subject_node .nodeLab .node_detail"
+```
+**数据结构**：`o.rt.examBase.workExamParts[].questionDtos[] { id, name, questionType.name, questionOptions[{id,content}], questionChildrens[] }`
+
+**答题能力直接用现成的**：页面里 `NetClass.askDs({type, name, optionList})`（DeepSeek 已接好，key 由 loader 下发）。
+
+## 现场的坑（别重复踩）
+
+1. **改 `App.js` 后必须三步**：`build.mjs` → `build-loader.mjs` → `netclass-deploy.ps1 -Action push` → 再**刷新页面**（只跑前两个不生效）
+2. **扩展改了要重载**：`node scripts\loader-reload.mjs 9229`（如果报 "no reload button"，就去 `chrome://extensions` 手动点重载）
+3. **开发者模式**：如果哪天又注入不了，先查这个（`ensure-devmode.mjs`）
+4. **模板字面量里的注释禁用反引号** —— 我踩过三次
+5. **别动**：`cc-auto.mjs` / `cc-lib.mjs`（长春 Agent）、`supervisor.mjs`（系统主管）、`progressInfo()` 的两个实现（我刚修好）
+
+## 窗口已经摆好了（别动）
+
+```
+9224 @(0,0)  9227 @(960,0)  9228 @(0,540)  9229 @(960,540)     ← 1920x1080 满屏 2x2
+```
+（我用 CDP 的 `Browser.setWindowBounds` 做的，工具在 `scripts/tile-4-cdp.mjs`）
