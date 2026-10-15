@@ -771,3 +771,25 @@ load() 之后 → networkState = 3 (NETWORK_NO_SOURCE)、duration = 0
 > · 长春：播放器会被 SPA 拆 → **页内 300ms 猎捕器**（不是刷新）
 > · shengsheng：MSE 流源失效 → **整页 reload**（`load()` 有害）
 > **判定手段是先看 `readyState` / `networkState` / `src 是不是 blob:`**，再选对应招法。
+
+### 5.42 ★★ `video.load()` 的使用前提（主线犯过两次，务必遵守）
+
+**`load()` 只在"媒体从未加载"时才用；一旦有数据或正在播，调它会把媒体清空。**
+
+两次实测教训（都是主线自己造成的）：
+
+| 场景 | 调用前 | 调 `load()` 后 | 后果 |
+|---|---|---|---|
+| shengsheng（MSE） | `rdy=1, net=2`（流失效） | `net=3 NETWORK_NO_SOURCE, duration=0`，页面报"不支持的音频/视频格式" | 播放器作废，只能整页刷新救 |
+| 学习通（普通 mp4） | **`cur=291/683, paused=false, rdy=4`（其实正在播！）** | `rdy=0, cur=0, dur=0` | 该任务点被驱动判为"起播 8 次失败 → 跳过" |
+
+**正确判据（三选一才允许 `load()`）**：
+```
+readyState === 0                              // 一点数据都没有
+&& duration 为 0/NaN                          // 连元数据都没有
+&& 不是 blob: 源（blob 是 MSE，load() 必炸）
+```
+
+**看到 `readyState >= 1` 就先别碰它** —— 先查 `paused`：若为 `true` 且 `!ended`，**只调 `play()` 即可**（当年在长春验证过：`video.play()` 对普通 mp4 是有效的，前提不是 MSE）。
+**最稳的是别猜：先采样两次 `currentTime`，确认它真的不动再动手。**
+
