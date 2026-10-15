@@ -88,12 +88,29 @@ for (;;) {
     } else {
       const moving = st.lastCur !== null && d.cur > st.lastCur + 1;
       const atEnd = d.dur > 0 && d.cur >= d.dur - 2;
-      if (moving || atEnd) st.stall = 0; else st.stall++;
-      const stuck = !moving && !atEnd && (d.paused || d.ready !== 4 || d.errToast);
+
+      // ★★ 判据二（2026-10-16 补）：**模块失能** —— 页面上有视频，但 NetClass 的 video.seen 一直是 0
+      //   说明模块实例卡死（看不到视频）→ 它既不会点"下一节"也不会应用倍速，表现为视频播到末尾就停住。
+      //   实测踩过：shengsheng 卡在 15/24（63%）而 ss-watch 全程认为"正常"（因为 cur==dur）。
+      if (d.seen === 0 && !d.allDone) st.dead = (st.dead || 0) + 1; else st.dead = 0;
+
+      // ★★ 判据三：**在末尾且暂停**连续多次 —— 正常情况下模块几秒内就该切下一节；
+      //   一直不动说明"切节"这条链断了（模块失能、或下一节按钮找不到）。
+      if (atEnd && d.paused) st.endPaused = (st.endPaused || 0) + 1; else st.endPaused = 0;
+
+      if (moving) st.stall = 0; else if (atEnd) st.stall = 0; else st.stall++;
+      const stuckStream = !moving && !atEnd && (d.paused || d.ready !== 4 || d.errToast);
+      const stuckModule = st.dead >= 2 || st.endPaused >= 3;      // 模块失能 / 卡在末尾不动
       log(key + ' [' + (d.title || '?').slice(0, 18) + '] cur=' + d.cur + '/' + d.dur + ' @' + d.rate + (d.paused ? ' 停' : ' 播') +
-        ' rdy' + d.ready + ' net' + d.net + (d.errToast ? ' ⚠报错' : '') + ' | 未推进 ' + st.stall + '/' + STALL + ' | 已自愈 ' + st.reloads);
-      if (st.stall >= STALL && stuck) {
+        ' rdy' + d.ready + ' net' + d.net + (d.errToast ? ' ⚠报错' : '') +
+        ' | 未推进 ' + st.stall + '/' + STALL + ' | 模块seen=' + (d.seen === undefined ? '?' : d.seen) +
+        ' | 末尾暂停=' + (st.endPaused || 0) + ' | 已自愈 ' + st.reloads);
+      if (stuckStream && st.stall >= STALL) {
         log('🔧 ' + key + ' 判定流卡死 → Page.reload（★ 不用 load()）');
+      } else if (stuckModule) {
+        log('🔧 ' + key + ' 判定【模块失能】（seen=' + d.seen + ' 末尾暂停=' + (st.endPaused || 0) + '）→ Page.reload 重新注入模块');
+      }
+      if ((stuckStream && st.stall >= STALL) || stuckModule) {
         try {
           const c2 = await conn(p);
           await c2.send('Page.enable');
