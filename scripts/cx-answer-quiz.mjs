@@ -144,15 +144,21 @@ const GRAB = `(function(){
   return JSON.stringify({ path: d.path, status: status, finished: finished, count: out.length, questions: out, submitBtn: btn, bodyText: bodyText });
 })()`;
 
+// ★★ 解密准备必须在【提取之前】（2026-10-15 主线修）——
+//   学习通按页内嵌密文字体子集，且提取时会直接调用 __cxDecode.text() 解码；
+//   如果先提取再准备，提取用的还是上一页的字表 → 题面全是乱码（实测就是踩了这个顺序坑）。
+const dec = await ensureDecoder();
+if (dec.err) { console.log('解密链路未就绪: ' + dec.err); process.exit(1); }
+console.log('解密链路就绪');
+const fontReload = await reloadCipherFont();
+console.log('   密文字体重载: ' + fontReload);
+
 const st = await c.ev(GRAB);
 if (!st || typeof st !== 'string') { console.log('抓题失败（返回异常）: ' + JSON.stringify(st).slice(0, 300)); process.exit(1); }
 const data = JSON.parse(st);
 if (data.err) { console.log('当前页不是测验页: ' + data.err); process.exit(1); }
 console.log('测验页: 题目数=' + data.count + '  状态=' + data.status + '  提交按钮=' + JSON.stringify(data.submitBtn));
 
-const dec = await ensureDecoder();
-if (dec.err) { console.log('解密链路未就绪: ' + dec.err); process.exit(1); }
-console.log('解密链路就绪');
 
 /** ★★ 换页重载密文字体（2026-10-15 主线补）——这是"题面乱码"问题的真正修法。
  *  学习通**按页内嵌字体子集**：每换一页，font-cxsecret 的 base64 TTF 就换一份。
@@ -184,8 +190,6 @@ async function reloadCipherFont() {
   const r = await c.ev('(async function(){ try { await window.__cxTT.load("' + b64 + '"); if (window.__cxDecode) window.__cxDecode._cache = {}; return "loaded c2g=" + (window.__cxTT.c2g && window.__cxTT.c2g.size || "?"); } catch(e) { return "ERR " + String(e).slice(0,50); } })()');
   return r;
 }
-const fontReload = await reloadCipherFont();
-console.log('   密文字体重载: ' + fontReload);
 
 // ---------------------------------------------------------------- 解码题面
 let decodedAll = [];
