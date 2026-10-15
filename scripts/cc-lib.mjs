@@ -329,7 +329,10 @@ export const HUNTER_JS = `(function(){
     } catch(e){}
     // ★★ 千万不要对【已播完】的视频调 play()：那会让它从头重播 → 制造无限循环，
     //    驱动等不到 "cur >= dur-2" 的判定 → 永远卡在同一段（实测踩过：resource 1408 已完成却一直循环）
-    if (v.paused && !v.ended) { try { v.play().catch(function(){}); } catch(e){} }
+    //    ⚠ 只判 !v.ended 不够：**MSE 流走到末尾时不一定会置 ended=true**（实测又循环了一次）
+    //    → 追加**位置判据**：已经贴到末尾（>= dur-1.5s）就一律不碰（注意：本段在模板字符串里，别用反引号）
+    var atEnd = v.duration > 0 && v.currentTime >= v.duration - 1.5;
+    if (v.paused && !v.ended && !atEnd) { try { v.play().catch(function(){}); } catch(e){} }
     if (!v.__ccHooked) {
       v.__ccHooked = 1;
       v.addEventListener('playing', function(){ window.__ccLog.push('playing@' + Math.round(v.currentTime)); });
