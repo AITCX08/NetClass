@@ -163,17 +163,109 @@ function rateHack() {
 
 ---
 
-## 五、万能脚本（ScriptCat #616）—— 待取的现状与取法
+## 五、万能脚本（ScriptCat #616）—— 已完成逆向
 
-- **页面**：https://scriptcat.org/zh-CN/script-show-page/616
-- **作者** zmq656；v5.0.4.1；支持【超星学习通】【智慧树】【职教云】【雨课堂】【考试星】【186网校】【继续教育类】【神呼云课堂】【九江系列】
-- **取源码方式**（下轮执行，二选一）：
-  1. ScriptCat 脚本页 → 「查看源码/安装」链接直取 `.user.js`（页面里有 `scripts/code/616/...` 形式的直链）
-  2. 浏览器打开该页 → 用 CDP 抓 `document` 里的源码块（页面自带代码视图）
-- **重点看**：
-  - 它支持**继续教育类平台**（我们正在做的长春教师培训就属于这一类）→ 可能直接有可复用的选择器/接口
-  - 它的**答题**部分（题库对接、选项匹配）与我们 `dsAnswer` 的差异
-  - 多平台**统一抽象**的写法（它一个脚本覆盖 9 类平台，抽象层次值得抄）
+### 5.1 获取方式（已验证可行）
+
+```powershell
+# 直链（注意中文文件名要 URL 编码）
+Invoke-WebRequest -Uri 'https://scriptcat.org/scripts/code/616/%E3%80%90%E4%B8%87%E8%83%BD%E3%80%91%E5%85%A8%E5%B9%B3%E5%8F%B0%E8%87%AA%E5%8A%A8%E7%AD%94%E9%A2%98%E8%84%9A%E6%9C%AC.user.js' -OutFile "$env:TEMP\wanneng.user.js"
+```
+- **605 KB / 11,523 行**（内嵌了一整份 jQuery，所以大）
+- ⚠️ 用 `web_fetch` 会被**截断在 100KB**（只拿到头部+jQuery）；**必须直接下载**
+
+### 5.2 核心架构：**题库在服务端**，脚本只是客户端
+
+```js
+// 行 6110 附近
+async function searchAnswer(data) {
+  const uri = token.length === 10 ? "/autoAnswer/" + token : "/autoFreeAnswer";
+  //  → 免费题库走 /autoFreeAnswer；付费题库走 /autoAnswer/<10位token>
+}
+// 行 7054
+const formatResult = await formatSearchAnswer(data);
+// 行 7063
+tip: "准备填充答案," + (formatAns.num === -1 ? "免费题库不扣积分" : "剩余积分:" + formatAns.num)
+```
+
+| 事实 | 含义 |
+|---|---|
+| 答案来自**作者的服务端**（`/autoFreeAnswer` / `/autoAnswer/<token>`）| 与 OCS（客户端 + 题库适配器）**路子完全不同**；它没有本地题库 |
+| `@antifeature payment 解锁付费题库需捐助`；token 是 **10 位** | 商业模式：免费题库（易爆「系统繁忙」）+ 付费题库（按积分） |
+| 行 6020: `429: "免费题库搜题整体使用人数突增,系统繁忙..."` | 免费接口**限流严重** |
+| `@match *://*/*` | 全站注入，靠 `match` 条件逐个平台判定 |
+
+→ **对我们的启示**：我们走的是**用户自配 key**（DeepSeek），不依赖第三方题库 —— 这条路更可控（没有限流、没有积分、没有跑路风险）。**这个方向是对的，不用改。**
+
+### 5.3 ★ 平台适配的写法：`WorkerJSPlus({...})` 一个平台一个配置对象
+
+```js
+// 行 10289 附近（真实样例，已简化）
+WorkerJSPlus({
+  name: "专技天下",
+  match: location.host.includes("zgzjzj.com") && location.pathname.includes("/examination/perpar.html"),
+  intv: () => $(".question_index").length,          // 触发条件：页面上有题目
+  root: ".question_index",                          // 题目容器
+  elements: {
+    question: "p",                                  // 题干
+    options: ".options li p,li>span:last-child",    // 选项文本
+    $options: ".options li",                        // 可点击的选项元素
+    type: "p span"                                  // 题型文本位置
+  },
+  ignore_click: $item => $item.hasClass("active"),   // 已选的跳过
+  wrap: obj => { /* 题干预处理（去掉序号/括号等）*/ }
+});
+```
+
+**这个结构非常值得抄**（比我们"每个平台写一个适配器类"更轻）：
+
+| 字段 | 作用 | 我们的对应物 |
+|---|---|---|
+| `name` | 平台显示名 | `PLATFORM_LABEL` |
+| `match` | host+path 判定 | `PLATFORM` 正则 |
+| `intv` | "页面有题"的判定 | `hasQuiz` |
+| `root` | 题目容器 | 无（我们写死）|
+| `elements.question/options/$options/type` | **四件套选择器** | 散落在代码里 |
+| `ignore_click` | 跳过已选 | 我们的 `before/after` 检查 |
+| `wrap` | 题干清洗 | 无 |
+
+### 5.4 题型映射
+
+```js
+const type = getQuestionType(item.ACHType.QuestionTypeName);   // 行 8819
+const type = getQuestionType(item.queTypeName);                // 行 9092
+```
+→ 各平台题型命名不一，**统一映射成内部枚举**再处理。我们 `dsAnswer` 里 `type 1/2/3`（单选/多选/判断）就是同一思路，可以照它补一个"平台题型名 → 内部枚举"的映射表。
+
+### 5.5 ⚠️ 关键发现：**它不支持长春/吉林**
+
+```
+grep '长春|吉林|ccjyxy'  →  0 命中
+```
+它支持 30+ 平台（含"贵州继续教育""专技天下"等继续教育类），但**长春市中小学教师全员培训平台不在列表里**。
+
+→ **结论**：长春这一单没有现成的可抄 —— 但它给了我们**写法模板**（§5.3 的四件套），我们的 `ADAPTER_CCJYXY` 可以直接用这个结构来写。
+→ 反过来，这也是我们的**机会点**：把长春这类"小众继续教育平台"做成我们的差异化能力。
+
+---
+
+## 七、两个脚本的路线对比（结论）
+
+| 维度 | OCS 网课助手 | 万能答题脚本 | 我们（netclass） |
+|---|---|---|---|
+| 开源 | ✅ GitHub（TS，可读） | ❌ 未声明协议（脚本猫托管） | 自有 |
+| 题库 | 客户端 + 题库适配器（多源） | **服务端**（免费/付费 token） | **用户自配 key（DeepSeek）** |
+| 播放控制 | ✅ `top.currentMedia` + videojs 埋点劫持 | ❌ 只做答题，不碰播放 | ✅ CDP 驱动 + `currentMedia`（待接） |
+| 任务点遍历 | ✅ `[onclick^=getTeacherAjax]` + `.jobUnfinishCount` | ❌ 不涉及 | ❌ 待按 OCS 改 |
+| 完成判定 | ✅ 读未完成计数字段 | ❌ | ❌ 待按 OCS 改 |
+| 平台适配粒度 | 大文件/平台（cx 82KB） | **轻配置/平台（~20 行）** | `ADAPTER_*` 类 |
+| 风控认知 | ✅ 明确写了高倍速/夜间风控警告 | ⚠️ 免费接口限流 | 待补 |
+
+**该抄什么**：
+1. **OCS** → 学习通的**枚举 + 完成判定 + 倍速/埋点**（§2，直接落到 `cx-auto.mjs` / `App.js`）
+2. **万能** → **"四件套选择器"的轻量平台配置结构**（§5.3，用来写长春等新平台，比现在每平台一个类更省事）
+3. **两家都别抄** → 服务端题库依赖（我们把答案来源交给用户自己的 key，更稳）
+
 
 ---
 
