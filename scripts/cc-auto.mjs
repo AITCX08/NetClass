@@ -175,13 +175,15 @@ for (let tick = 1; tick <= 100000; tick++) {
     if (s.onPlayer && s.video) {
       if (current && current.name) touchClaims([current.name], TAG);   // 心跳：只续当前这门
       if (s.video.dur && s.video.cur >= s.video.dur - 1.5) {
-        // ★★ 死循环修复（2026-10-15）：原代码只 `log + sleep(4000) + continue`，
-        //    没有任何状态改变 → 视频停在末尾时每 4 秒转一圈，**永远不换段**（实测卡死）。
-        //    正确做法：把它当成"这段播完了" —— 回课程页取下一段（与 waitSegment 的 'done' 分支一致）。
-        log(`段播完 ${s.video.cur}/${s.video.dur}（尾部）→ 回课程页取下一段`);
+        // ★★ 死循环修复 v2（2026-10-15）：只设 mode 是没用的 —— COURSE 分支的条件是 `s.onCourse`，
+        //    而视频停在末尾时**页面还在播放器上**（s.onPlayer），分支不匹配 → 又落回 PLAY → 每 3 秒转一圈。
+        //    必须**真的点「返回课程列表」离开播放器**，之后 COURSE 分支才会命中。
+        log(`段播完 ${s.video.cur}/${s.video.dur}（尾部）→ 点返回课程列表`);
         segTotal++;
+        const left = await tab.clickText('返回课程列表');
+        await sleep(6000);
+        if (!left) { log('  ⚠ 没找到「返回课程列表」→ 直接回培训页'); await backToTraining(tab, log); mode = 'PICK'; sinceEnum = 0; await sleep(3000); continue; }
         mode = 'COURSE';
-        await sleep(3000);
         continue;
       }
       const r = await waitSegment(tab, segTotal + 1);
