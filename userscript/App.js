@@ -1431,10 +1431,46 @@
     }
   };
 
+  /** ★ 长春教师培训（ccjyxy）适配器 —— 2026-10-15 补：此前 P_ADAPTER 对 ccjyxy 是 null，
+   *  所以面板「进度」永远显示 `—`（用户反馈"进度没有正确显示"）。
+   *  口径：**学时进度**（这平台是按"整门课完成后结算学时"，不是按资源数）——
+   *    数据源 = 平台自己的 API `/api/v1/me/my-trainings-progress`：
+   *      learned_score = 已结算学时，required_score = 需完成学时（90）
+   *  ⚠️ progressInfo() 是**同步**调用的 → 不能在里头发 fetch；用 poll() 定时刷缓存（30 秒）。 */
+  const ADAPTER_CCJYXY = {
+    key: 'ccjyxy',
+    _p: null,
+    _last: 0,
+    pageKind() { return document.querySelector('video') ? 'player' : 'list'; },
+    player() { return document.querySelector('video') || null; },
+    onResponse() { },
+    resetRound() { },
+    async poll() {
+      if (now() - this._last < 30000) return;
+      this._last = now();
+      try {
+        const tk = localStorage.getItem('access_token');
+        if (!tk) return;
+        const r = await fetch('/api/v1/me/my-trainings-progress', { credentials: 'include', headers: { 'Accept': 'application/json', 'Authorization': 'Bearer ' + tk } });
+        const arr = await r.json();
+        const o = arr && arr[0];
+        if (!o) return;
+        const total = Number(o.required_score) || 90;         // 需完成学时
+        const done = Number(o.learned_score) || 0;            // 已结算学时
+        const remainHours = Math.max(0, total - done);
+        const remainSec = remainHours * 3600;                 // 剩余视频秒数（1 学时≈3600s 视频）
+        const rate = 1.25;                                    // 平台记账硬上限（实测：播 2x/3x 都只记 1.25x）
+        this._p = { total: total, done: done, pct: total ? Math.round(done / total * 100) : 0, remainSec: remainSec, etaSec: remainSec / rate, rate: rate };
+      } catch (_) { }
+    },
+    progressInfo() { return this._p; },
+  };
+
   const P_ADAPTER = PLATFORM === 'shengsheng' ? ADAPTER_SHENGSHENG
     : PLATFORM === 'qiyang' ? ADAPTER_QIYANG
       : PLATFORM === 'webtrn' ? ADAPTER_WEBTRN
-        : PLATFORM === 'chaoxing' ? ADAPTER_CHAOXING : null;
+        : PLATFORM === 'chaoxing' ? ADAPTER_CHAOXING
+          : PLATFORM === 'ccjyxy' ? ADAPTER_CCJYXY : null;
 
   // ------------------------------------------------------------ 收工：全部刷完
   const DONE_KEY = 'netclass.done.' + PLATFORM;
