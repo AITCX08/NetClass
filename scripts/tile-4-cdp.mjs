@@ -18,7 +18,10 @@ const arg = (k, d) => { const i = argv.indexOf('--' + k); return i >= 0 ? Number
 // ★ 默认 960x540 = 1920x1080 屏的 2x2（笔记本真实分辨率）。
 //   踩过的坑：System.Windows.Forms.Screen 报的是 WinDisc 虚拟显示器 1024x768，
 //   按那个摆只会占满屏幕左上角。真实分辨率要从 GPU 读（RTX 3050 = 1920x1080）。
-const W = arg('w', 960), H = arg('h', 540);
+// ★ 默认 960x510 —— 高不是 540！1920x1080 屏**底部有任务栏（约 50px）**，
+//   用满高 540 会把下面一排窗口切掉（用户实测反馈）。510x2 = 1020，留 60px 给任务栏。
+//   注意：Screen.WorkingArea / SPI_GETWORKAREA 在这台机器上只报虚拟显示器的 1024x768，**不可信**。
+const W = arg('w', 960), H = arg('h', 510);
 const SLOTS = [[0, 0], [W, 0], [0, H], [W, H]];
 
 async function withTarget(port, fn) {
