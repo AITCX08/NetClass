@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..');
+const AGENT_V = 3;   // ★ 必须与 runs/cx/agent.js 的 window.__cxAgentV 一致
 const AGENT_SRC = readFileSync(join(REPO, 'runs', 'cx', 'agent.js'), 'utf8');
 const RATE_SRC = readFileSync(join(REPO, 'runs', 'cx', 'cx-rate.js'), 'utf8');
 
@@ -75,7 +76,8 @@ async function mouse(c, x, y) {
 async function ensureAgent() {
   if (!okWs(c)) { c = await conn(); if (!okWs(c)) return false; }
   const v = await c.ev('window.__cxAgentV || 0');
-  if (v !== 2) { await c.ev(AGENT_SRC); await sleep(500); }
+  // ★ 版本号必须与 runs/cx/agent.js 里的 window.__cxAgentV 一致（两处都改，别只改一边 —— 踩过）
+  if (Number(v) !== AGENT_V) { await c.ev(AGENT_SRC); await sleep(500); }
   const rt = await c.ev('window.__cxRateV || 0');
   if (rt !== 1) { await c.ev(RATE_SRC); await sleep(300); }
   const t = await c.ev('typeof window.__cxAgent');
@@ -84,7 +86,7 @@ async function ensureAgent() {
 }
 async function step() {
   if (!okWs(c)) { c = await conn(); if (!okWs(c)) return null; }
-  const raw = await c.ev('(function(){ if (window.__cxAgentV !== 2) return JSON.stringify({act:"NOAGENT"}); try { return JSON.stringify(window.__cxAgent.step()); } catch(e){ return JSON.stringify({__err: String(e && e.stack || e).slice(0,200)}); } })()');
+  const raw = await c.ev('(function(){ if (window.__cxAgentV !== ' + AGENT_V + ') return JSON.stringify({act:"NOAGENT"}); try { return JSON.stringify(window.__cxAgent.step()); } catch(e){ return JSON.stringify({__err: String(e && e.stack || e).slice(0,200)}); } })()');
   if (!raw) return null;
   if (raw.__err) return { __err: raw.__err };
   try { return JSON.parse(raw); } catch (e) { return null; }
