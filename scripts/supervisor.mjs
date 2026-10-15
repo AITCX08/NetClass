@@ -161,6 +161,11 @@ for (;;) {
     if (!pids.length) { issues.push(t.name + '缺失'); if (!DRY) spawnDetached(t.args, t.out, t.err); }
   }
 
+  // ★ 顺手把"基础设施进程"的可见控制台窗口收掉（用户要求本机不弹窗）
+  try {
+    execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'scripts/hide-infra-windows.ps1'], { encoding: 'utf8', timeout: 30000 });
+  } catch (_) { }
+
   log('CDP: ' + ports.join(' ') + (down.length ? '（已尝试重建 ' + down.join(',') + '）' : '') + '  |  ' + (issues.length ? '修复: ' + issues.join('、') : '全部在位'));
   cycleNo++;
   dedupeSelf(cycleNo);        // ★ 每轮复查：不是最小 pid 就让位退出
