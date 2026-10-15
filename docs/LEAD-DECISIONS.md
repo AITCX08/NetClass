@@ -110,6 +110,37 @@ ncCc:rate = 3
 **已落地**：`localStorage['ncCc:rate'] = '1.25'`（猎捕器每次实时读它）。
 **Agent B 请把驱动里设置倍速的地方也统一成 1.25**，别再设 2 或更高。
 
+### ★★ A3. 必须加"**补齐（catch-up）**"逻辑 —— 否则资源仍不会 completed
+
+**问题**：A2 的修正只能**阻止差距继续扩大**，**消不掉已经形成的差距**。
+实测（第 17–18 轮，resource 1408）：
+
+```
+20:18:05  记账 1319 | 视频 2120   → 差 801   （改 1.25x 前形成的差距）
+20:20:05  记账 1469 | 视频 2282   → 差 813   （改后冻结，但差距仍在）
+推算：视频 2282 @1.25x → 约 5.6 分钟后播完（≈20:26）
+      记账 1469 @1.25x → 需 16.5 分钟才到 2703（≈20:37）
+→ 视频【先播完】，此时记账 ≈1920 < 2703 → completed 仍为 false
+```
+
+**驱动必须补这一段**（建议实现）：
+1. 视频播完后，**别立刻换课**，先查 API：
+   ```
+   GET /api/v1/video-progress/resource?resource_id=N
+   → { max_position_sec, duration_sec, completed }
+   ```
+2. 若 `completed === false` 且 `max_position_sec < duration_sec`：
+   **重新进这个资源**（平台的播放位置会从"已记账位置"续播）→ 继续播
+   → 每轮播完都查一次，直到 `completed === true`（或 `max_position_sec` 不再增长为止）
+3. 只有 `completed === true` 才换下一段/下一课
+4. 若重进 3 次仍不涨（可能被服务端限速拒收），记 `blocked` 换课，别死磕
+
+**验收信号**（拿到任一即证明闭环成立）：
+- `GET /api/v1/video-progress/resource?resource_id=N` → `"completed": true`
+- `GET /api/v1/completions/my` → 非空数组
+- `GET /api/v1/me/my-trainings-progress` → `learned_score` 从 0 变正、`completed_courses` ≥ 1
+
+
 
 ## B. 平台记录会"滞后"约 400 秒，别误判成"冻结"
 
