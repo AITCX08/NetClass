@@ -15,3 +15,6 @@ secrets.json
 .env
 
 runs/orders/
+
+# 第三方参考源码（OCS Desktop 的适配器，只用于对照，绝不入库）
+reference/
