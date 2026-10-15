@@ -17,7 +17,17 @@
  */
 const P = 9224;
 const argv = process.argv.slice(2);
-const getArg = (k, d) => { const m = argv.find(a => a.startsWith('--' + k)); return m ? Number(m.split('=')[1] || m.split(' ')[1]) : d; };
+// ★ 参数解析必须同时支持 `--k=v` 和 `--k v` 两种写法！
+//   踩过的坑：旧写法 `m.split('=')[1] || m.split(' ')[1]` 对 `--stall 3` 返回 undefined
+//   → Number(undefined) = NaN → setTimeout(fn, NaN) 被当 1ms → 进程空转被拖死（实测看门狗反复自尽）
+const getArg = (k, d) => {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--' + k) { const v = Number(argv[i + 1]); return Number.isFinite(v) ? v : d; }          // --k 3
+    if (a.startsWith('--' + k + '=')) { const v = Number(a.split('=')[1]); return Number.isFinite(v) ? v : d; }  // --k=3
+  }
+  return d;
+};
 const STALL = getArg('stall', 3);
 const INTERVAL = getArg('interval', 30);
 
