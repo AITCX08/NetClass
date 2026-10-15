@@ -147,6 +147,25 @@
    */
   const ZHS_MINIMAL = PLATFORM === 'zhihuishu';
 
+  /**
+   * 知到「弹题」看护开关（2026-10-15 实测定稿）：
+   *   页面侧只做 **识别 + 解析 + 决策 + 上报**（1 秒一次、纯 DOM 读）；
+   *   **点击一律由 CDP 侧真实鼠标完成**（Input.dispatchMouseEvent → isTrusted=true）。
+   *   为什么不在页面侧点：站点元素级监听拿 `!e.isTrusted` 判"合成事件"，实测合成点击后
+   *   页面被弹回门户（warn 弹窗 + 3 秒跳转）——这条坑写进 platforms.md 了。
+   */
+  const ZHS_QUIZ_WATCH = true;
+
+  /** 归一化文本：去 HTML 标签/空白/标点，用于"回包题目"与"DOM 题干"对齐 */
+  function normText(s) {
+    return String(s == null ? '' : s)
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/[\s\u3000]+/g, '')
+      .replace(/[，。；：！？、,.!?;:"'`]/g, '')
+      .slice(0, 200);
+  }
+
   // ------------------------------------------------------------ 反检测：把包装函数伪装成原生
   /**
    * 智慧树那条 isNative 检查里**包含 `XMLHttpRequest.prototype.open`**（解码自 bundle：0x38a/0x379/0x3a6）。
@@ -1550,6 +1569,14 @@
       const h = location.hostname;
       if (/^login\./i.test(h) || /passport\./i.test(h)) return 'login';
       if (/studyvideoh5/i.test(h)) return /stuStudy/i.test(location.pathname) ? 'study' : 'study-other';
+      // 作业/考试（在线学堂）—— 2026-10-15 接：onlineexamh5new 是新版 SPA（hash 路由），exam. 是旧版
+      if (/onlineexamh5new|onlineexam|studentexam|taurusexam/i.test(h) || /^exam\./i.test(h)) {
+        const hash = location.hash || '';
+        if (/checkHomework|checkExam|viewResult/i.test(hash)) return 'exam-review';
+        if (/dohomework|doexamination|answerSheet/i.test(hash)) return 'exam-do';
+        if (/webExamList/i.test(hash)) return 'exam-list';
+        return 'exam-other';
+      }
       if (/onlineweb|studyservice|studyh5/i.test(h)) return 'home';
       return 'other';
     },
@@ -1589,11 +1616,346 @@
           this._state = body.data;                 // { lesson:{}, lv:{} }
           this._refresh();
         } else if (/popupAnswer\/loadVideoPointerInfo/.test(url) && body && body.data) {
-          // 弹题点位：{ questionPoint:[{timeSec,questionIds}] }（题型/作答 UI 待接，先留档）
+          // 弹题点位：{ questionPoint:[{timeSec,questionIds}] }
           state.zhsQuiz = { points: body.data.questionPoint || [], at: now() };
           if ((body.data.questionPoint || []).length) log('知到弹题点位', JSON.stringify(body.data.questionPoint).slice(0, 120));
+        } else if (/popupAnswer\/lessonPopupExam/.test(url) && body && body.data) {
+          // ★ 弹题题目本体（2026-10-15 接）：这是**站点自己**在弹窗前/中请求的接口，回包里带题干/选项/我上次的作答。
+          //   本模块只做"旁路读回包"（不替换 JSON.parse、不发自己的请求）——知到会查 isNative，任何多余包装都是风险。
+          this._q = body.data;
+          this._qAt = now();
+          this.quizBrief();                        // 把结构摘要写进 state（控制器/调试可读）
+          log('知到弹题数据', String(state.zhsPopup && state.zhsPopup.brief || '').slice(0, 300));
+        } else if (/exam|answer|homework|paper|question/i.test(url) && body && this.looksLikePaper(body)) {
+          // ★ 作业/考试卷子（2026-10-15 接）：万能脚本是用 JSON.parse 钩子抓这段；知到上不能随便钩 JSON.parse
+          //   （站点查 isNative），所以走**已有的 XHR 旁路**（responseURL + responseText），同一个回包、零额外特征。
+          this._exam = body;
+          this._examAt = now();
+          this.examBrief();
+          log('知到试卷数据', String(state.zhsExam && state.zhsExam.count || 0) + ' 题', String(state.zhsExam && state.zhsExam.where || '').slice(0, 60));
         }
       } catch (e) { err(e); }
+    },
+    /** lessonPopupExam 回包的结构摘要（只保留够定位答案的字段，避免 state 变大） */
+    quizBrief() {
+      try {
+        const d = this._q || {};
+        const keys = Object.keys(d);
+        // 站点把题目放在哪个数组里是随版本变的：逐个候选找"像题目"的那个
+        const cand = ['lessonTestQuestionUseInterfaceDtos', 'testQuestionDtos', 'questionDtos', 'questionList'];
+        let arrKey = cand.find(k => Array.isArray(d[k])) || null;
+        let arr = arrKey ? d[arrKey] : null;
+        if (!arr) {                              // 兜底：扫第一层里第一个"元素是对象且像题目"的数组
+          for (const k of keys) {
+            if (Array.isArray(d[k]) && d[k].length && typeof d[k][0] === 'object' && d[k][0] !== null
+              && (d[k][0].name || d[k][0].testQuestion || d[k][0].questionOptions)) { arrKey = k; arr = d[k]; break; }
+          }
+        }
+        const first = (arr && arr[0]) || null;
+        const q = (first && (first.testQuestion || first)) || null;
+        const opts = (q && (q.questionOptions || [])) || [];
+        state.zhsPopup = {
+          at: this._qAt, keys: keys.slice(0, 12), arrKey: arrKey, count: arr ? arr.length : 0,
+          brief: first ? JSON.stringify(first).slice(0, 1200) : JSON.stringify(d).slice(0, 600),
+          q: q ? {
+            name: String(q.name || '').slice(0, 200),
+            questionId: q.questionId || null,
+            type: String((q.questionType && q.questionType.name) || ''),
+            options: opts.map(o => ({ id: o.id, content: String(o.content || '').slice(0, 80), result: o.result })),
+            children: Array.isArray(q.questionChildrens) ? q.questionChildrens.length : 0
+          } : null,
+          zAnswer: first && first.zAnswer ? first.zAnswer : null
+        };
+      } catch (e) { err(e); }
+    },
+    /** 弹题弹窗根节点（站点：el-dialog aria-label="弹题测验"，外层 wrapper .dialog-test） */
+    popupEl() {
+      return document.querySelector('.el-dialog[aria-label="弹题测验"]')
+        || document.querySelector('.el-dialog__wrapper.dialog-test .el-dialog') || null;
+    },
+    /** 解析弹窗 DOM：题干/题型/选项/站点已显示的正确答案 */
+    parsePopup(root) {
+      root = root || this.popupEl();
+      if (!root) return null;
+      const titleEl = root.querySelector('.topic-title');
+      let typeName = '', stem = '';
+      if (titleEl) {
+        const t = titleEl.querySelector('.title-tit');
+        typeName = t ? String(t.innerText || '').replace(/[【】\s]/g, '') : '';
+        const txt = Array.from(titleEl.querySelectorAll('span'))
+          .filter(s => !/title-tit|right/.test(String(s.className)))
+          .map(s => String(s.innerText || '').trim()).filter(Boolean).join(' ');
+        stem = (txt || String(titleEl.innerText || '')).replace(/\s+/g, ' ').trim();
+        stem = stem.replace(/^(正确|错误)\s*/, '').replace(/【[^】]*】/g, '').trim();
+        // 实测题干会重复两遍（题干本身 + 选项容器各带一份 span 文本）→ 折叠重复
+        const half = stem.slice(0, Math.floor(stem.length / 2)).trim();
+        if (half && half.length > 8 && stem.slice(half.length).trim() === half) stem = half;
+      }
+      const opts = Array.from(root.querySelectorAll('li.topic-item')).map((li, i) => {
+        const letterEl = li.querySelector('.topic-option-item');
+        const txtEl = li.querySelector('.item-topic') || li;
+        const letter = String((letterEl && letterEl.innerText) || '').replace(/[.\s、]/g, '').slice(0, 2) || String.fromCharCode(65 + i);
+        return { name: letter, data: String((txtEl.innerText) || '').trim(), active: !!li.querySelector('.topic-option-item.active'), el: li };
+      });
+      const ansEl = root.querySelector('.answer');
+      let correct = '';
+      if (ansEl) {
+        const m = String(ansEl.innerText || '').toUpperCase().match(/[A-H]/g);
+        correct = m ? m.join(',') : '';
+      }
+      return {
+        typeName: typeName, name: stem, opts: opts,
+        correct: correct, answered: opts.some(o => o.active),
+        kind: /多选/.test(typeName) ? 2 : (/判断/.test(typeName) ? 3 : 1),
+        el: root
+      };
+    },
+    /**
+     * 站点给的答案线索（优先于问模型）：全部来自 popupAnswer/lessonPopupExam 的回包（旁路拿的，不发自己的请求）。
+     * 实测回包结构（2026-10-15，导论 questionId=16228913）：
+     *   data.lessonTestQuestionUseInterfaceDtos[0]
+     *     .testQuestion.name            "<span style=...>安全教育…</span>"  ← 带 HTML
+     *     .testQuestion.questionId      16228913
+     *     .testQuestion.questionType    {id:14,name:"判断题",inputType:"radio"}
+     *     .testQuestion.questionOptions [{id:53715220,content:"对",sort:1,result:"1"},
+     *                                    {id:53715221,content:"错",sort:2,result:"0"}]
+     *     .zAnswer                      {answer:"53715220"}  ← ★ 是"我上次选的选项 id"，不是字母
+     * 语义（结合站点 bundle 里那段比对逻辑 + 现场 UI 交叉验证）：
+     *   · result == 1 的选项 = 正确选项；
+     *   · zAnswer.answer   = 该学生**已经答过**的那一题所选的选项 id（有它说明这题不用再答）。
+     */
+    zhsAnswer(info) {
+      try {
+        const st = state.zhsPopup || null;
+        const q = (st && st.q) || null;
+        if (!q) return null;
+        if (info && info.name && q.name && normText(q.name).indexOf(normText(info.name).slice(0, 16)) < 0) return null;  // 不是同一题
+        const opts = q.options || [];
+        const letterOfIdx = i => String.fromCharCode(65 + i);
+        const letters = [];
+        for (let i = 0; i < opts.length; i++) if (Number(opts[i].result) === 1) letters.push(letterOfIdx(i));
+        const z = (st && st.zAnswer) || null;
+        let answeredPick = '';
+        if (z && z.answer) {
+          const idx = opts.findIndex(o => String(o.id) === String(z.answer));
+          if (idx >= 0) answeredPick = letterOfIdx(idx);
+        }
+        return {
+          correctLetters: letters.join(','),     // 站点标注的正确选项（没有就空）
+          answeredPick: answeredPick,            // 我上次选的那个选项
+          answered: !!(z && z.answer),
+          questionId: q.questionId || null
+        };
+      } catch (e) { err(e); return null; }
+    },
+    /** 给外部驱动器读的弹题快照（只读，不点任何东西；点击一律由 CDP 侧真实鼠标完成） */
+    popupInfo() {
+      try {
+        const root = this.popupEl();
+        const out = { open: !!root, at: now() };
+        if (!root) return out;
+        const info = this.parsePopup(root);
+        if (!info) return out;
+        const site = this.zhsAnswer(info) || null;
+        out.stem = info.name;
+        out.type = info.typeName;
+        out.kind = info.kind;
+        out.options = info.opts.map(o => {
+          let rect = null;
+          try { const r = o.el.getBoundingClientRect(); rect = [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]; } catch (_) { }
+          return { letter: o.name, text: o.data, active: !!o.active, rect: rect };
+        });
+        out.domAnswer = info.correct || '';
+        out.badge = (function () { try { const b = root.querySelector('.topic-title .right'); return b ? String(b.innerText || '').trim() : ''; } catch (_) { return ''; } })();
+        out.site = site;
+        const plan = state.zhsPopupSolve || null;
+        out.target = plan && plan.target || (site && site.correctLetters) || out.domAnswer || '';
+        out.why = plan && plan.src || (site && site.correctLetters ? 'option-result' : (out.domAnswer ? 'dom-answer' : ''));
+        // 关闭按钮 / 下一页按钮（坐标也一起给驱动器）
+        const rc = (sel) => { try { const e = root.querySelector(sel); if (!e) return null; const r = e.getBoundingClientRect(); return { rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)], disabled: !!e.disabled }; } catch (_) { return null; } };
+        out.closeBtn = rc('.el-dialog__footer .btn') || rc('.el-dialog__headerbtn');
+        out.nextBtn = rc('.el-pagination .btn-next');
+        out.pager = (function () { try { const p = root.querySelector('.el-pager .number.active'); return p ? String(p.innerText || '').trim() : ''; } catch (_) { return ''; } })();
+        return out;
+      } catch (e) { err(e); return { open: false, err: String(e && e.message || e) }; }
+    },
+    /** 弹题看护定时器（1 秒；懒启动，dispose 时随 timers 一起清掉） */
+    ensureWatch() {
+      if (this._watchOn || !ZHS_QUIZ_WATCH) return;
+      this._watchOn = true;
+      timers.push(setInterval(() => { try { this.quizTick(); } catch (e) { err(e); } }, 1000));
+    },
+    /** 弹题主循环（1 秒一次，由 poll 启动）：只在弹窗在的时候动，视频被弹窗暂停时正好慢慢处理 */
+    async quizTick() {
+      if (!CFG.autoQuiz) return;
+      const root = this.popupEl();
+      if (!root) { this._popupKey = ''; this._popupGone = now(); return; }
+      if (this._busy) return;
+      const info = this.parsePopup(root);
+      if (!info || !info.name || !info.opts.length) return;
+      const key = (info.name + '|' + info.opts.map(o => o.name + o.data).join('|')).slice(0, 200);
+      if (key === this._popupKey) return;
+      this._popupKey = key;
+      this._busy = true;
+      try { await this.solvePopup(info); } catch (e) { err(e); } finally { this._busy = false; }
+    },
+    /**
+     * 弹题「决策」——**只看不点**（点击一律交给 CDP 侧真实鼠标；页面内合成事件会被站点元素级
+     * 监听判为"异常脚本"，实测直接把页面弹回门户，见 docs/CC-STATUS-LEAD.md 第 91 轮与 platforms.md）。
+     *
+     * 答案优先级（全部实测过字段含义）：
+     *   ① 站点回包标了 result==1 的正确选项 → 用它（不是猜的，是站点自己给的）；
+     *   ② 选项列表里已经有 .answer「正确答案：X」→ 用它；
+     *   ③ 以上都没有（新题）→ 问 DeepSeek（NetClass.askDs 同源，key 由加载器下发）。
+     * 另外：回包里 zAnswer 有值 = 这题**我答过**（视频重看时才会这样），此时站点把选项锁住，
+     *   UI 上点不动 → 只需关闭弹窗让视频继续。
+     */
+    async solvePopup(info) {
+      state.quiz.seen++;
+      const site = this.zhsAnswer(info);
+      let target = '', src = 'none';
+      if (site && site.correctLetters) { target = site.correctLetters; src = 'option-result'; }
+      else if (info.correct) { target = info.correct; src = 'dom-answer'; }
+      if (!target) {
+        try {
+          const r = await inferAnswer({ name: info.name, type: info.kind, optionList: info.opts.map(o => ({ name: o.name, data: o.data })) });
+          target = r && r.answer; src = (r && r.why) || 'ds';
+        } catch (e) { err(e); }
+      }
+      const plan = {
+        at: now(), name: info.name.slice(0, 120), type: info.typeName, kind: info.kind,
+        opts: info.opts.map(o => o.name + ':' + o.data.slice(0, 40)),
+        siteAnswer: site || null, domAnswer: info.correct || '', target: target, src: src,
+        answeredAlready: !!(site && site.answered) || info.answered,
+        needClick: !!(target && !(site && site.answered)),
+        clickBy: 'cdp-real-mouse'
+      };
+      state.zhsPopupSolve = plan;
+      log('知到弹题：' + (plan.answeredAlready ? '站点已作答' : '待作答') + ' | 目标=' + (target || '(空)') + ' | 来源=' + src + ' | ' + info.typeName + ' ' + info.name.slice(0, 40));
+      return plan;
+    },
+    /**
+     * 作业/考试卷子摘要（2026-10-15 接）——数据来自 answer 相关接口回包。
+     * 万能脚本认的是 `o.rt.examBase.workExamParts[]`，但**复习页/答题页的回包形状不一样**（实测复习页就不是这个路径），
+     * 所以这里做**深度受限的结构搜索**：找任何一层上"元素带 questionDtos 的数组"，再按万能脚本的规则摊平：
+     *   parts[].questionDtos[] { id, name, questionType.name, questionOptions[{id,content,result}], questionChildrens[] }
+     * 复合题（阅读理解/完型/听力）展开 questionChildrens。
+     */
+    looksLikePaper(body) {
+      try {
+        const s = JSON.stringify(body);
+        return /"questionDtos"|"workExamParts"|"questionChildrens"|"questionOptions"/.test(s);
+      } catch (_) { return false; }
+    },
+    examBrief() {
+      try {
+        let hit = null;                                   // { where, arr }
+        let visited = 0;
+        const walk = (node, path, depth) => {
+          if (hit || !node || typeof node !== 'object' || depth > 5) return;
+          if (++visited > 4000) return;
+          if (Array.isArray(node)) {
+            if (node.length && node[0] && typeof node[0] === 'object' && node[0] !== null
+              && (node[0].questionDtos || node[0].questionList || node[0].questions)) {
+              hit = { where: path, arr: node };
+              return;
+            }
+            for (let i = 0; i < Math.min(node.length, 20); i++) walk(node[i], path + '[' + i + ']', depth + 1);
+            return;
+          }
+          for (const k of Object.keys(node)) {
+            if (/^(name|content|imgUrls|videoInfo|txtInfo)$/.test(k)) continue;
+            walk(node[k], path ? path + '.' + k : k, depth + 1);
+            if (hit) return;
+          }
+        };
+        walk(this._exam, '', 0);
+        if (!hit && !this._exam) { return; }
+        let flat = [];
+        if (hit) {
+          const push = (it, parent) => {
+            if (!it) return;
+            const q = {
+              id: it.id, type: String((it.questionType && it.questionType.name) || it.questionTypeName || ''),
+              name: normText(it.name || it.question || '').slice(0, 300),
+              options: ((it.questionOptions || it.options) || []).map(o => ({ id: o.id, content: normText(o.content || o.optionContent || '').slice(0, 200), result: o.result }))
+            };
+            q.children = Array.isArray(it.questionChildrens) ? it.questionChildrens.length : 0;
+            if ((q.type.indexOf('填空') >= 0 || q.type.indexOf('问答') >= 0) === false
+              && q.children && it.questionChildrens) { it.questionChildrens.forEach(c => push(c, it)); }
+            else flat.push(q);
+          };
+          hit.arr.forEach(part => (part.questionDtos || part.questionList || part.questions || []).forEach(q => push(q)));
+        }
+        state.zhsExam = {
+          at: this._examAt, where: hit ? hit.where : '(未找到题目数组)', parts: hit ? hit.arr.length : 0, count: flat.length,
+          questions: flat.slice(0, 120),
+          raw: hit ? '' : JSON.stringify(this._exam).slice(0, 1200)
+        };
+      } catch (e) { err(e); }
+    },
+    /** 作业/考试页面快照（只读）：DOM 解析 + 接口数据合并，供 CDP 驱动器作答/提交 */
+    examInfo() {
+      const out = { kind: this.pageKind(), url: location.href.slice(0, 200), at: now() };
+      const api = state.zhsExam || null;
+      out.api = api ? { parts: api.parts, count: api.count, paperName: api.paperName } : null;
+      const apiQ = (api && api.questions) || [];
+      const nodes = Array.from(document.querySelectorAll('.examPaper_subject'));
+      out.domCount = nodes.length;
+      out.items = nodes.map((el, i) => {
+        const typeEl = el.querySelector('.subject_type');
+        let typeText = typeEl ? String(typeEl.innerText || '').replace(/\s+/g, ' ').trim() : '';
+        const stemEl = el.querySelector('.subject_describe') || el.querySelector('.smallStem_describe') || el;
+        let stem = String(stemEl.innerText || '').replace(/\s+/g, ' ').trim();
+        const options = Array.from(el.querySelectorAll('.nodeLab')).map((lab, j) => {
+          const input = lab.querySelector('input');
+          const letterEl = lab.querySelector('.fl span') || lab;
+          const letter = (String(letterEl.innerText || '').match(/([A-H])/) || [null, String.fromCharCode(65 + j)])[1];
+          const detail = lab.querySelector('.node_detail');
+          const text = String((detail || lab).innerText || '').replace(/\s+/g, ' ').trim();
+          let rect = null;
+          try { const r = lab.getBoundingClientRect(); rect = [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]; } catch (_) { }
+          let img = '';
+          try { const im = lab.querySelector('img'); img = im ? String(im.getAttribute('src') || '') : ''; } catch (_) { }
+          return {
+            letter: letter, text: text.slice(0, 200), rect: rect, img: img.slice(-20),
+            optionId: input ? String(input.value || '') : '',
+            disabled: input ? !!input.disabled : null,
+            checked: input ? !!input.checked : null,
+            kind: input ? String(input.type || '') : ''
+          };
+        });
+        const qid = el.getAttribute('data-questionid') || '';
+        const apiHit = apiQ.find(q => String(q.id) === String(qid)) || apiQ[i] || null;
+        // 复习页（checkHomework）上 input.checked = 学生当时的作答；img 还带一份"选中/未选"图标指纹（作兜底）
+        const marked = options.filter(o => o.checked === true || /872099a548602d4d/.test(o.img || '')).map(o => o.letter);
+        const cleanType = typeText.replace(/[【】]/g, '').replace(/\s*[（(].*$/, '').trim();
+        return {
+          i: i + 1, qid: qid, type: cleanType, stem: stem.slice(0, 300),
+          options: options, api: apiHit ? { id: apiHit.id, type: apiHit.type, name: apiHit.name.slice(0, 120), options: apiHit.options } : null,
+          markedCorrect: marked                         // 复习页上"已选/正确"的选项（img 指纹，见注释）
+        };
+      });
+      return out;
+    },
+    /** 单题问答案（给驱动器用）：返回 {letters, src}；站点有 result 标记时直接用站点的 */
+    examAnswer(i) {
+      return (async () => {
+        const info = this.examInfo();
+        const it = info.items[i];
+        if (!it) return null;
+        const site = (it.api && it.api.options || []).filter(o => Number(o.result) === 1);
+        if (site.length) {
+          const letters = [];
+          for (const o of site) {
+            const idx = it.api.options.indexOf(o);
+            if (idx >= 0) letters.push(String.fromCharCode(65 + idx));
+          }
+          if (letters.length) return { letters: letters.join(','), src: 'option-result' };
+        }
+        const r = await inferAnswer({ name: it.stem, type: /多选/.test(it.type) ? 2 : (/判断/.test(it.type) ? 3 : 1), optionList: it.options.map(o => ({ name: o.letter, data: o.text })) });
+        return { letters: (r && r.answer) || '', src: (r && r.why) || 'ds' };
+      })();
     },
     /** 用接口数据重算进度（同步） */
     _refresh() {
@@ -1622,6 +1984,7 @@
     resetRound() { this._tree = null; this._state = null; this._p = null; },
     async poll() {
       // 只读监看：接口数据由 onResponse 旁路缓存，poll 不发请求（降低 CDP/自动化痕迹，见 docs/CC-STATUS-LEAD.md 第 81 轮）
+      if (ZHS_QUIZ_WATCH) this.ensureWatch();          // 弹题看护：1 秒一次，只在弹窗出现时做决策
       if (state.loopTicks % 10 === 0) {
         const pr = this.progressInfo();
         state.zhs = { kind: this.pageKind(), title: document.title.slice(0, 30), progress: pr, at: now() };
@@ -1972,6 +2335,8 @@
     /** 本课程进度与预估（面板同源）：{pct, done, total, remainSec, etaSec} */
     progress: () => courseProgress(),
     webtrn: (P_ADAPTER && P_ADAPTER.id === 'webtrn') ? P_ADAPTER : null,
+    /** ★ 知到适配器（2026-10-15）：驱动器用 NetClass.zhs.popupInfo() 拿弹题快照与目标答案，自己用真实鼠标点 */
+    zhs: (P_ADAPTER && P_ADAPTER.id === 'zhihuishu') ? P_ADAPTER : null,
     /** ★ 手动挂载控制面板（2026-10-15 补）：实测自动挂载在部分加载路径下不触发（页面 7 个 frame 都找不到
      *  面板，但同文件里的 NetClassSettings.mount() 一调就出来）→ 把主面板也暴露出来，
      *  这样驱动器/调试脚本可以兜底：NetClass.panel() */

@@ -708,11 +708,16 @@ ode scripts/parallel-probe.mjs --port <端口> [--max 3] [--secs 20] [--open <�
    - **教训**：iframe 内元素的 `getBoundingClientRect()` 是**相对该 iframe** 的，而 CDP 用**顶层坐标**——不累加偏移会点到顶层完全无关的元素（实测点到了 `SPAN.titlewords`）。**这个坑在本项目踩了三次**（测验勾选、视频播放各一次）。
 5. **倍速**：1.5x 能保住，2x 被打回 1x（平台风控）。
 
-### 5.37 长春教师培训（ccjyxy）接入的四个事实
-1. **分类是 Material-UI Accordion**：展开要点 `h3.MuiAccordion-heading > button`；点「展开」图标 span（`MuiAccordionSummary-expandIcon`）**不生效**（实测点几十次，卡片仍 0；改点 button 后 34 张）。React 应用一律用**真实鼠标事件**。
-2. **倍速锁死 1x**（20.8 秒墙钟 = 20.8 秒视频），不要浪费时间试更高倍速。
-3. **并行可行**：同浏览器多标签各管一门课，平台**不踢会话**；驱动用 `--tab N` 认领标签（`--newtab` 自动开）。
+### 5.37 长春教师培训（ccjyxy）接入的事实（2026-10-16 修订，下面两条旧结论已作废）
+
+> 详细的现行事实清单在 **`docs/CC-STATUS.md`**（含进度口径、启动/验收命令）。以下是本文件的要点：
+1. **分类是 Material-UI Accordion**：展开要点 `.MuiAccordionSummary-root` 的**右侧文字区**（55% 宽处）；点「展开」图标 span / 落在 expandIcon `<svg>` 上的点击 **MUI 会忽略**。**已展开的分类绝不能再点**（点了会折叠 → 枚举 0，实测把驱动卡死在重展开循环里）。
+2. **~~倍速锁死 1x~~ → 作废**：实测 **2x 可以稳跑**（180 秒墙钟推进 338 秒 = 1.87x；长段实测 `实速=2`）。之前测到 1x 是因为当时油猴脚本 `netclass.cfg.v3` 里 `enabled:false`，倍速纠正没跑。真正的实现是 `scripts/cc-lib.mjs` 的 `installHunter()`：把 `<video>.playbackRate` 的访问器换成 "getter 实时读 `localStorage['ncCc:rate']`（默认 2）+ setter 一律忽略"，再用 `HTMLMediaElement.prototype` 的原生 setter 每 300ms 压上去。
+3. **~~并行可行~~ → 作废（重要）**：**同账号只允许一个播放会话**。开第二个标签/实例 → 旧播放页显示「该培训已切换到其他课程或视频，本播放页已停止」，并且 `POST /api/v1/video-progress/report` 返 **423 Locked**、`media.ccjyxy.cn` 的 HLS 分片全 `ERR_FAILED`、`video.readyState` 恒 0。**并行只会让两边都废**。
 4. **枚举 0 ≠ 全部完成**：分类会折叠，返回培训页后必须重新展开再枚举，否则误判"做完了"而提前退出。
+5. **进度上报被服务端钳位**：把 `currentTime` 设到 927s，服务端收到的 `position_sec` 只有 296→536；**跳不过去**，跳到尾部只会从头重播。→ 只能老实播（2x 已是最优，90 学时 ≈ 22.5 小时纯播放）。
+6. **视口会被压小**：多次开关标签后窗口变 ~500×237，所有 CDP 点击落空（`elementFromPoint` 返回空 DIV）。驱动每轮调 `ensureViewport()`（`Emulation.setDeviceMetricsOverride 1200x1000`）。
+7. **「进入」按钮可能点不动**：被一个空 DIV 盖住。兜底 = **整页导航回首页**（`tab.navigate('https://col.ccjyxy.cn')`），SPA 重载后直接落到培训页。
 
 ### 5.38 跨平台通用纪律（新增）
 - **面板按钮管不到控制器上的驱动器**：面板只控制页面内模块。→ 约定用一个标记联动：面板的「暂停/启动」写 `localStorage['ncCc:paused']` / `['ncCx:paused']`，驱动器每轮开头读它，为 `'1'` 就等待。
@@ -873,5 +878,72 @@ Page.captureScreenshot({ format:'png', captureBeyondViewport:true,
    `E` 会得到 `-1` → 选项点不上。改成 `L.charCodeAt(0) - 65`。
 2. **测验页在 3 层 iframe 里**：`studentstudy` → `knowledge/cards` → `modules/work/index.html` → `doHomeWorkNew`。
    做题面/按钮定位时用**真递归收集**，别用"某个文档里找到了就返回"的写法。
+
+### 5.48 知到弹题：**页面内合成点击 = 异常脚本**（2026-10-15 实测，踩中一次整页回门户）
+
+**症状**：在知到学习页里用 `el.click()` / `dispatchEvent(new MouseEvent('click'))` 点弹题选项或「关闭」→
+当时没反应，之后弹一个 warn 层，**3 秒后页面跳回 `www.zhihuishu.com`**（`studyvideoh5` 的标签直接没了）。
+
+**根因**：站点元素级监听拿 `!e.isTrusted` 判"合成事件"（与播放器那条 `videoClick` 同源判据）。
+
+**修法（已落地）**：**页面侧只"看"**（`NetClass.zhs.popupInfo()` → 题干/选项/站点答案/关闭按钮坐标），
+**点击一律交给 CDP 真鼠标**（`Input.dispatchMouseEvent`，`isTrusted=true`），驱动器在 `runs/zhs-quiz.mjs`。
+**别在页面里点任何东西**——包括"顺手点一下关闭"。
+
+### 5.49 知到考试页有 CSP：页面内问不了 DeepSeek（2026-10-15）
+
+**症状**：在 `onlineexamh5new.zhihuishu.com` 里调 `NetClass.askDs` 全部失败（`Failed to fetch`），
+`inferAnswer` 静默回退到本地启发式 `guess()` —— 于是"准确率"看起来只有 30%，**那是启发式，不是模型**。
+
+**根因**：考试页 HTML 带 `Content-Security-Policy: connect-src 'self' *.zhihuishu.com …`，`api.deepseek.com` 不在白名单。
+
+**修法**：作业/考试页的答案**由驱动器在 PC 侧**调 DeepSeek（`runs/zhs-exam.mjs` 从加载器 SW 读 key）。
+实测同一套 10 道真题 **10/10 全对**；`deepseek-reasoner` 反而 6/10（有空答）→ **保持 `deepseek-chat`**。
+学习页（`studyvideoh5`）没有 CSP，页面侧 `askDs` 仍然可用。
+
+### 5.50 知到弹窗比窗口大：小窗口里点不到「关闭」（2026-10-15）
+
+弹题弹窗 630x480，而 9829/9229 的**页面视口**只有 500x237（窗口 512x384 减掉浏览器 chrome）→ footer 的
+「关闭」按钮落在视口外，CDP 点不到（`Input.dispatchMouseEvent` 只认视口坐标）。
+**两种解法**：① 先 `el.scrollIntoView()` 把按钮滚进视口；② `Emulation.setDeviceMetricsOverride` 把**页面**视口
+放大到 1280x800（只改渲染，不动窗口位置；知到侧未见检测——注意：**学习通侧禁用这招**，见 5.45）。
+顺带：播放器控件是**悬停才出现**的（`.vjs-control-bar`/`#playButton` 平时 rect 全是 0），
+**结束态点视频区中心**会从头起播（真实鼠标），这是最省事的起播方式。
+
+### 5.51 知到「平时测试」的语义：`checkHomework` = 已提交（2026-10-15）
+
+学习页目录里 `li.chapter-test`（「平时测试」）真鼠标点开 → 新标签
+`onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList/<kind>/<recruitId>/<tok1>/<tok2>/<courseId>/<examId>`：
+`checkHomework` = **已提交/结果页**（有得分、每题「正确」、学生作答落在 `input.checked`），
+`dohomework`/`doexamination` = 待做。
+**别把 `checkHomework` 当成"待做"** —— 本轮把 13 个「平时测试」逐个点开，**全部是 checkHomework**（绪论 6/6、
+第一章 20/20 …），本门课**没有可提交项**；期末 2026-12-14 才开考。
+（另一门「中国饮食文化」走旧版 `wisdom-mooc.zhihuishu.com/study/index`，树上的 `.test-box` 测入口在后台标签里
+布局错位、被章节行盖住，真鼠标点不到；合成点击又因无用户手势被 `window.open` 拦 —— 需前景化窗口后再点。)
+
+### 5.52 🔴 事故：**批量关标签把浏览器关掉了 → 知到账号掉登录**（2026-10-15，已定位、待用户补一步）
+
+**怎么发生的**：收官点做"环境清理"时，用
+`Invoke-RestMethod ".../json/list" | Where-Object { … -match "onlineexam|webExamList|wisdom-mooc" }` 取列表再逐个
+`/json/close/<id>`。**实际关掉的远不止匹配项**：连 `studyvideoh5` 学习页、`polymas` 学堂页、门户页一起关了，
+**该窗口最后一个标签一关，Chrome 进程直接退出**（浏览器 = 该 profile 的最后一个窗口）。重启后
+`www.zhihuishu.com` 显示「登录 / 注册」、学堂页 302 到 `login.zhihuishu.com`、直连 stuStudy 404 跳门户 →
+**会话 cookie 没落盘（session cookie），登录状态丢失**（`userDataDirs\zh9f3c2a1b8d7e6504\Default\Network\Cookies`
+里 zhihuishu 行数为 **0**，而同机老 profile `5273d1b0…` 有 16 行但那是 2024 年的过期会话）。
+
+**恢复（用户扫码/输密码一次即可）**：
+1. 9229 窗口（屏幕右下角那块）现在停在 `https://login.zhihuishu.com/?origin=zhs` → **扫码**或**账号登录**；
+2. 登录后**必须从「我的学堂」点课程卡片**进学习页（入口铁律，见 platforms.md）；
+3. 页面里 `window.NetClass` 会自动注入（加载器 extension 还在 profile 里，devmode 也没丢）。
+
+**教训（写给后来者）**：
+- **永远不要批量关标签**。要清理就**按 id 关**，并且**先确认关完之后该窗口还剩至少一个标签**；
+  或者干脆不清理（多几个标签不会影响驱动）。
+- 收尾想"还原初始标签集"是**危险的**：多标签本身无害，关错一个标签可能丢整个浏览器会话。
+- 驱动脚本选页面的写法（`list.find(t => t.url.includes('stuStudy'))`）**取第一个匹配**，
+  所以**别给同一个平台开第二个标签**（多开会被引到错误的页面）。
+- 本机 `schtasks /Run /TN NetClassVis-zhihuishu` 是重启 9229 浏览器的**正确姿势**（只杀该端口实例、
+  清 Singleton 锁、带 netclass-loader + Tampermonkey 扩展、`--remote-debugging-port=9229`）。
+
 
 
