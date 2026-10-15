@@ -237,15 +237,79 @@ const type = getQuestionType(item.queTypeName);                // 行 9092
 ```
 → 各平台题型命名不一，**统一映射成内部枚举**再处理。我们 `dsAnswer` 里 `type 1/2/3`（单选/多选/判断）就是同一思路，可以照它补一个"平台题型名 → 内部枚举"的映射表。
 
-### 5.5 ⚠️ 关键发现：**它不支持长春/吉林**
+### 5.5 ★★ 它到底支不支持学习通/知到？（**更正：支持，但只做"答题"，不做"视频/任务点"**）
+
+**第一次搜索我得出了错误结论（"不支持"）——因为关键词搜偏了。复核后的事实：**
 
 ```
-grep '长春|吉林|ccjyxy'  →  0 命中
+命中数（全脚本 11,523 行）
+  任务点 0   学时 0   观看 0   刷课 0   自动播放 0   静音 0
+  muted 0    倍速 0   自动跳转 0   下一节 0
+  视频 1（无关：智慧树的提示文案）
 ```
-它支持 30+ 平台（含"贵州继续教育""专技天下"等继续教育类），但**长春市中小学教师全员培训平台不在列表里**。
 
-→ **结论**：长春这一单没有现成的可抄 —— 但它给了我们**写法模板**（§5.3 的四件套），我们的 `ADAPTER_CCJYXY` 可以直接用这个结构来写。
-→ 反过来，这也是我们的**机会点**：把长春这类"小众继续教育平台"做成我们的差异化能力。
+**→ 它完全不碰视频/任务点播放**（这符合它的定位：**自动答题**脚本，不刷课）。
+
+**但它对学习通/知到是"完整支持答题"的**，一共有这些平台配置：
+
+| 平台配置 | 触发页面 | 用途 |
+|---|---|---|
+| `学习通作业` | `/mooc2/work/dowork`、`/mooc-ans/mooc2/work/dowork` | 作业 |
+| **`超星章节测验`** | **`/work/doHomeWorkNew`** ← 正是我们卡住的那个页 | 章节测验 |
+| `超星随堂测验` | （另配） | 随堂 |
+| `超星旧版考试` | `/exam/test/reVersionTestStartNew` … | 考试 |
+| `超星新版考试` | `/mooc2/exam/preview` 等 | 考试 |
+| `智慧树作业/考试` | `*.zhihuishu.com` + `checkHomework` 分支 | 作业/考试 |
+| `智慧树学分课作业/考试` | `studentexambaseh5.zhihuishu.com` 等 | 学分课 |
+
+**★ `超星章节测验` 的完整选择器（可直接对照我们的实现）：**
+```js
+WorkerJSPlus({
+  name: "超星章节测验",
+  match: location.pathname === "/work/doHomeWorkNew" || location.pathname === "/mooc-ans/work/doHomeWorkNew",
+  init: start,
+  root: ".clearfix .TiMu",
+  elements: {
+    question: ".Zy_TItle .clearfix",
+    options: "ul:eq(0) li .after",
+    $options: "ul:eq(0) li :radio,:checkbox,textarea,.num_option_dx,.num_option",
+    type: "input[name^=answertype]"          // ← 题型也从隐藏 input 读（与我们实测的 answertype214747193 一致）
+  },
+  ignore_click: $item => $item.is("input") ? $item.get(0).checked
+                                           : $item.attr("class").includes("check_answer"),
+  fill: async (type, answer, $option) => {
+    if (type === 4 || type === 2 || type === 5) {          // 简答/填空/论述类
+      UE.getEditor($option.attr("name")).setContent(answer);   // ← 用平台自己的 UEditor 填
+    }
+  }
+});
+```
+
+**三条高价值经验**：
+| # | 经验 | 说明 |
+|---|---|---|
+| 1 | **题型从隐藏 input 读**：`input[name^=answertype]` | 与我们实测的 `answertype214747193 => hidden:0/1` 完全吻合（0=单选, 1=多选）|
+| 2 | **简答/论述用 `UE.getEditor(name).setContent(answer)`** | 直接操作平台的 UEditor 实例，比模拟输入稳；填充还能防"检测粘贴" |
+| 3 | **防检测：模拟真实鼠标事件点「下一题」** | 旧版考试配置里用 `document.createEvent("MouseEvents")`，且坐标**在按钮上随机偏移 80px 内**（`Math.random()*80`），并把 `isTrusted` 相关字段抹掉 —— **这印证了我们"必须用真实鼠标事件"的结论，而且它更进一步：连坐标都要随机化** |
+
+**另外**：脚本内嵌了 **超星加密字体的解密链路**（`Typr` 的 glyf 解析），说明超星部分题面是**字体加密**的 —— 这类题目靠 DOM 文本抓不到，必须先解密字体映射。
+
+### 5.6 修正后的能力矩阵
+
+| 能力 | OCS | 万能 | 我们 |
+|---|---|---|---|
+| **视频/任务点遍历与播放** | ✅ 完整（§2）| ❌ 完全没有 | ✅ 有（待按 OCS 改枚举/判定）|
+| **学习通测验/作业/考试答题** | ✅ | ✅ **5 个配置齐全**（§5.5）| ⚠️ 已能答（14 个选项实测勾上），配置待细化 |
+| **知到/智慧树答题** | ✅ | ✅ | ❌ 未做 |
+| 超星**字体加密**题目 | ? | ✅ 带 Typr 解密 | ❌ |
+| 防检测（真实鼠标+随机坐标） | 部分（埋点拦截）| ✅ **随机坐标点击** | ⚠️ 只用真实鼠标，**未随机化** |
+| 题库来源 | 客户端多源适配 | **服务端**（免费/付费token）| 用户自配 key |
+
+**该抄什么的最终结论**：
+1. **视频/任务点** → 抄 OCS（§2：`onclick` 枚举 + `.jobUnfinishCount` 判定 + `currentMedia` 倍速 + videojs 埋点拦截）
+2. **答题** → 抄万能的**平台配置四件套** + **题型读隐藏 input** + **UEditor 填简答** + **随机坐标真实点击**
+3. **答案来源** → 谁都不抄，用**用户自配 key**
+
 
 ---
 
