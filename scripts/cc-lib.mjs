@@ -66,7 +66,7 @@ export async function claimCourse(name, tag, opts = {}) {
   }
   const cur = o[name];
   if (cur && cur.tag && cur.tag !== tag) { writeClaims(o); return false; }
-  if (cur && !cur.tag && cur.done) { writeClaims(o); return false; }   // 已完成的排到队尾
+  if (cur && !cur.tag && cur.done) { writeClaims(o); return false; }   // 别人的"已完成"墓碑：排到队尾（自己的墓碑上面已放行）
   o[name] = { tag, at: now };
   writeClaims(o);
   return true;
@@ -86,7 +86,7 @@ export function touchClaims(names, tag) {
 }
 /** 当前认领表快照 */
 export function claimsSnapshot() { return readClaims(); }
-/** 清掉我的认领（用 completed=true 排到队尾，避免马上又抢回来） */
+/** 清掉我的认领（completed=true 时留一个墓碑排到队尾；注意墓碑必须是别人不能抢、自己可以重新认领） */
 export function releaseCourse(name, tag, completed = false) {
   const o = readClaims();
   if (!o[name]) return;
@@ -302,9 +302,15 @@ export async function pageState(tab) {
  * 注意：SPA 内部路由切换不会清掉它；整页刷新会 —— 所以驱动每轮调用一次（幂等）。
  */
 export const HUNTER_JS = `(function(){
-  if (window.__ccHunt) return 'already';
-  window.__ccLog = [];
+  // ★★ 心跳自检（2026-10-15 补）：不能只判断 window.__ccHunt 存在！
+  //   实测踩过：页面重载/异常会让 setInterval **静默死掉**，但 __ccHunt 还留着一个旧 ID
+  //   → installHunter 返回 'already' → 倍速掉回 1x 且无人察觉（面板还显示"自动处理中"）。
+  //   现在用 __ccHuntBeat 心跳判断：超过 5 秒没跳 = 已死，清掉重装。
+  if (window.__ccHunt && window.__ccHuntBeat && (Date.now() - window.__ccHuntBeat) < 5000) return 'alive';
+  if (window.__ccHunt) { try { clearInterval(window.__ccHunt); } catch(e){} }
+  window.__ccLog = window.__ccLog || [];
   window.__ccHunt = setInterval(function(){
+    window.__ccHuntBeat = Date.now();
     function f(r){try{var v=r.querySelector&&r.querySelector('video');if(v)return v;var fs=r.querySelectorAll?r.querySelectorAll('iframe'):[];for(var i=0;i<fs.length;i++){var d=null;try{d=fs[i].contentDocument}catch(e){}if(d){var x=f(d);if(x)return x}}}catch(e){}return null}
     var v = f(document); if (!v) return;
     try { v.muted = true; } catch(e){}
@@ -339,6 +345,7 @@ export const HUNTER_JS = `(function(){
       v.addEventListener('pause', function(){ window.__ccLog.push('pause@' + Math.round(v.currentTime)); });
     }
   }, 300);
+  window.__ccHuntBeat = Date.now();     // 装好先打一次心跳，免得首次自检误判
   return 'installed';
 })()`;
 
@@ -401,39 +408,53 @@ export async function ensureTraining(tab, log = () => { }) {
 }
 
 /** 展开分类（cat：null=全部 / 0,1,2）。
- *  MUI Accordion：必须真鼠标点击 `.MuiAccordionSummary-root` 左侧区域，
- *  点按钮正中间有可能落在内部按钮上（实测点了不生效）。 */
+ *  ★ 三条实测纪律：
+ *   ① 只点「还没展开」的（点已展开的会折叠回去 → 枚举变 0）
+ *   ② 点 summary 的**右侧文字区**（55% 宽处）；MUI 会忽略落在 expandIcon `<svg>` 上的点击
+ *   ③ 点完必须校验 `Mui-expanded` 才认成功，否则继续重试
+ */
 export async function expand(tab, cat = null, log = () => { }) {
   const names = cat === null ? CATNAMES : [CATNAMES[cat]];
   for (const nm of names) {
     let ok = false;
-    for (let k = 0; k < 6 && !ok; k++) {
-      const res = await tab.ev(`(function(){
+    for (let k = 0; k < 8 && !ok; k++) {
+      const info = await tab.ev(`(function(){
         var accs = Array.from(document.querySelectorAll('.MuiAccordion-root'));
         var a = accs.find(function(x){ var h=x.querySelector('h3'); return h && (h.innerText||'').indexOf(${JSON.stringify(nm)})>=0; });
         if (!a) return 'noacc';
         if (a.className.indexOf('Mui-expanded') >= 0) return 'open';
-        var s = a.querySelector('.MuiAccordionSummary-root'); if (!s) return 'nosum';
+        // ★ 保险：这一栏的课程卡已经渲染出来了 → 说明它本来就是展开的，绝不再点（点了会折叠）
+        var rendered = Array.from(a.querySelectorAll('.MuiListItem-root')).some(function(li){ return /编码[:：]/.test(li.innerText||'') && (li.offsetWidth||li.offsetHeight); });
+        if (rendered) return 'open';
+        var s = a.querySelector('.MuiAccordionSummary-root');
+        if (!s) return 'nosum';
+        var abs = s.getBoundingClientRect().top + window.scrollY;
+        window.scrollTo(0, Math.max(0, Math.round(abs - window.innerHeight / 2)));
         s.scrollIntoView({block:'center'});
         var r = s.getBoundingClientRect();
-        if (r.width < 4 || r.height < 4) return 'invisible';
-        return JSON.stringify({x: Math.round(r.left + 22), y: Math.round(r.top + r.height/2), y2: Math.round(r.top + Math.min(20, r.height/2))});
+        if (r.width < 40 || r.height < 8) return 'invisible';
+        return JSON.stringify({
+          x: Math.round(r.left + Math.min(r.width - 70, r.width * 0.55)),
+          y: Math.round(r.top + r.height / 2),
+          top: Math.round(r.top), h: Math.round(r.height), vh: window.innerHeight
+        });
       })()`);
-      if (res === 'open') { ok = true; break; }
-      if (!res || res === 'noacc' || res === 'nosum' || res === 'invisible' || res.__err) { await sleep(2000); continue; }
-      const b = JSON.parse(res);
+      if (info === 'open') { ok = true; break; }
+      if (!info || info === 'noacc' || info === 'nosum' || info === 'invisible' || info.__err) { await sleep(1800); continue; }
+      const b = JSON.parse(info);
+      if (b.top < 12 || b.top > b.vh - 12) { await sleep(1200); continue; }
       await tab.clickAt(b.x, b.y);
-      await sleep(2000);
+      await sleep(1800);
       const chk = await tab.ev(`(function(){
         var accs = Array.from(document.querySelectorAll('.MuiAccordion-root'));
         var a = accs.find(function(x){ var h=x.querySelector('h3'); return h && (h.innerText||'').indexOf(${JSON.stringify(nm)})>=0; });
-        return a ? (a.className.indexOf('Mui-expanded') >= 0 ? 'open' : 'closed') : 'noacc';
+        return a && a.className.indexOf('Mui-expanded')>=0 ? 'open' : 'closed';
       })()`);
       if (chk === 'open') ok = true;
     }
-    if (!ok) log('    ⚠ 分类「' + nm + '」展开失败');
+    if (!ok) log('    ⚠ 分类「' + nm + '」展开失败（保持不动）');
   }
-  await sleep(1500);
+  await sleep(1200);
 }
 
 /** 枚举课程（cat 过滤；返回 name/cat/undone）。
