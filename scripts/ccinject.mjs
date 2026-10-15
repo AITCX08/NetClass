@@ -3,7 +3,12 @@ const P = 9228;
 const list = await (await fetch(`http://127.0.0.1:${P}/json/list`)).json();
 const pages = list.filter(t => t.type === 'page' && /ccjyxy/.test(t.url) && !/tampermonkey/.test(t.url));
 console.log('ccjyxy 标签: ' + pages.length);
-const HUNTER = `(function(){
+/** 直接引用共享库里的 HUNTER_JS —— ★ 单一来源，避免两份实现分叉
+ *  （踩过的坑：本脚本曾自带一份旧版猎捕器，没有心跳自检，
+ *    导致页面上装的是旧版、`beatAgo` 永远 none、倍速掉回 1x 也无人察觉） */
+import { HUNTER_JS as HUNTER_FROM_LIB } from './cc-lib.mjs';
+const HUNTER = HUNTER_FROM_LIB;
+const _OLD_HUNTER_UNUSED = `(function(){
   try { if (!localStorage.getItem('ncCc:rate')) localStorage.setItem('ncCc:rate','2'); } catch(e){}
   if (window.__ccHunt) return 'already';
   window.__ccLog = [];
