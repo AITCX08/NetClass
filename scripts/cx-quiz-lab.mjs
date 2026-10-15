@@ -87,7 +87,7 @@ const SURVEY = `(function(){
   }
   var body = (dd.body ? dd.body.innerText : '').replace(/\\s+/g,' ');
   out.framePath = 'yes';
-  out.bodyText = body.slice(0, 1200);
+  out.bodyText = body.slice(0, 6000);
   // ★ 密文判据：PUA 私用区字符数 + 页内有没有 font-cxsecret
   (function(){
     var n = 0, samp = [];
@@ -161,6 +161,46 @@ async function nav(url, waitMs) {
 }
 
 const CHAPTER = String(A.chapter || '');
+if (A.scores) {
+  // 批量读"已提交测验"的成绩单：--scores id1,id2,...  → 每行一条紧凑结果
+  const ids = String(A.scores).split(',').map(s => s.trim()).filter(Boolean);
+  const COURSE0 = String(A.course || '266554494'), CLAZZ0 = String(A.clazz || '153244493'), ENC0 = String(A.enc || 'cdb2c66bf5e1889e38c3cfb0e051f838');
+  const ROWS = [];
+  for (const id of ids) {
+    const u = `https://mooc1.chaoxing.com/mooc-ans/mycourse/studentstudy?chapterId=${id}&courseId=${COURSE0}&clazzid=${CLAZZ0}&enc=${ENC0}`;
+    await nav(u, 8000);
+    const raw = await ev(`(function(){ ${DEEP}
+      var dd = deep(document,0); if(!dd) return JSON.stringify({err:'no-timu'});
+      var t = (dd.body ? dd.body.innerText : '').replace(/\\s+/g,' ');
+      var m = t.match(/本次成绩[:：]\\s*([0-9.]+)/);
+      var title = (t.match(/^[^ ]+已完成/) || [])[0] || '';
+      // 按题切：每题以「我的答案：」为锚，向前找题干、向后找得分
+      var parts = t.split(/(?=【(?:判断题|单选题|多选题|填空题)】)/);
+      var q = [];
+      parts.forEach(function(p){
+        var head = (p.match(/^【(判断题|单选题|多选题|填空题)】/) || [])[1];
+        if (!head) return;
+        var mine = (p.match(/我的答案：([^得]*?)得分/) || [])[1];
+        var sc = (p.match(/得分：\\s*([0-9.]+)/) || [])[1];
+        var stem = p.replace(/^【[^】]*】/,'').split(/A、|$ /)[0].slice(0, 60);
+        q.push({ kind: head, mine: mine ? mine.replace(/\\s+/g,' ').trim().slice(0,50) : '', score: sc === undefined ? null : Number(sc), stem: stem.replace(/\\s+/g,' ').trim().slice(0, 46) });
+      });
+      var stat = {};
+      q.forEach(function(x){ stat[x.kind] = stat[x.kind] || { n: 0, full: 0 }; stat[x.kind].n++; if (x.score && x.score > 0) stat[x.kind].full++; });
+      return JSON.stringify({ title: title, score: m ? Number(m[1]) : null, stat: stat, q: q, bodyText: t.slice(0, 9000), url: location.href.slice(0,90) });
+    })()`);
+    let o = null; try { o = JSON.parse(String(raw)); } catch (e) { }
+    console.log('=== ' + id + ' ===');
+    if (!o || o.err) { console.log('  ' + String(raw).slice(0, 160)); continue; }
+    console.log('  ' + o.title + '  本次成绩=' + o.score + '  ' + JSON.stringify(o.stat));
+    o.q.forEach((x, i) => console.log('   ' + (i + 1) + ' [' + x.kind + '] 对=' + (x.score > 0 ? 'Y' : 'N') + ' 我的=' + JSON.stringify(x.mine) + ' | ' + x.stem));
+    ROWS.push({ id: id, title: o.title, score: o.score, stat: o.stat, q: o.q, bodyText: o.bodyText });
+  }
+  writeFileSync(join(REPO, 'runs', 'cx-quiz-scores.json'), JSON.stringify(ROWS, null, 1), 'utf8');
+  console.log('汇总已落盘 runs/cx-quiz-scores.json');
+  ws.close();
+  process.exit(0);
+}
 if (!CHAPTER) { console.log('需要 --chapter <chapterId>'); process.exit(1); }
 const ENC = String(A.enc || 'cdb2c66bf5e1889e38c3cfb0e051f838');
 const COURSE = String(A.course || '266554494');
@@ -183,7 +223,7 @@ if (survey) {
   console.log('  原始首题面: ' + String(survey.rawFirstStem).slice(0, 120));
   console.log('  关键字: ' + JSON.stringify(survey.marks));
   console.log('  按钮: ' + JSON.stringify(survey.buttons));
-  console.log('  正文片段: ' + String(survey.bodyText).slice(0, 500));
+  console.log('  正文片段: ' + (A.fullbody ? String(survey.bodyText) : String(survey.bodyText).slice(0, 500)));
   (survey.questions || []).slice(0, 12).forEach(q => {
     console.log('   Q' + (q.i + 1) + ' [' + q.cls + '] attrs=' + JSON.stringify(q.attrs).slice(0, 120));
     console.log('      stem: ' + q.stem.slice(0, 120));

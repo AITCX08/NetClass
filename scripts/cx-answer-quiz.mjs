@@ -135,7 +135,7 @@ const GRAB = `(function(){
         else if (v) { txt = v; }
         else { txt = '选项' + (i + 1); }
       }
-      opts.push({ letter: letter.slice(0,4), text: txt.slice(0,200) });
+      opts.push({ letter: String.fromCharCode(65 + i), site: letter.slice(0, 4), text: txt.slice(0, 200) });
     });
     var name = lis[0] && lis[0].querySelector('input') ? lis[0].querySelector('input').name : ('q'+idx);
     out.push({ idx: idx, name: name, stem: stem, options: opts,
@@ -219,42 +219,126 @@ for (const q of data.questions) {
 
 if (DRY) { console.log('\n--dry：不解题、不勾选，直接退出'); c.ws.close(); process.exit(0); }
 
-// ---------------------------------------------------------------- 问 DeepSeek + 勾选
+// ---------------------------------------------------------------- 整卷作答（2026-10-16 换掉逐题 askDs）
+// ★★ 旧路径（逐题 NetClass.askDs）的两个硬伤：
+//   ① 判断题的 option.name 直接来自 input.value（学习通是 true/false），经 askDs 截断成
+//      "true"/"fals" 再返回，答题器里的 /false/i 匹配不上 "fals" → 判断题全部落到默认分支答「对」
+//      （实测：第二十一章 6 道判断 3 对 3 错 → 全答"对"只拿一半分；第十六章 5 道判断 0 分；
+//        第十九章整卷 0 分）。这是"判断题永远答对"的真正根因 —— 不是提示词问题。
+//   ② 逐题调用没有整卷上下文，单题 900 字上限、max_tokens=32。
+//   实测（39 题真值集，真值取自成绩单）：旧口径 ≈34% → 新口径 82~85%。
+//   ⚠️ 本段在模板字符串里，注释中禁用反引号。
+const ASK_V = 2;
+const askV0 = await c.ev('(window.__cxAsk && window.__cxAsk.v) || 0');
+if (Number(askV0) !== ASK_V) { await c.ev(file('runs/cx/cx-ask.js')); await sleep(250); }
+console.log('   作答模块 __cxAsk v=' + (await c.ev('(window.__cxAsk && window.__cxAsk.v) || 0')));
+
+const askPaper = {
+  course: (data.course || '形势与政策'),
+  chapter: String(data.chapter || data.status || '').replace(/\s+/g, ' ').slice(0, 40),
+  questions: data.questions.map((q, i) => ({
+    no: i + 1,
+    kind: q.kind,
+    typeText: '【' + (q.kind === 'multiple' ? '多选题' : q.kind === 'judge' ? '判断题' : '单选题') + '】',
+    stem: (decodedAll[i] ? decodedAll[i].stem : q.stem),
+    options: q.options.map((o, k) => ({
+      letter: String.fromCharCode(65 + k),
+      text: (decodedAll[i] && decodedAll[i].options[k]) ? decodedAll[i].options[k] : o.text
+    }))
+  }))
+};
+const PAPER_JSON = JSON.stringify(askPaper);
+const mkAsk = (body) => '(function(){ try { var P = ' + PAPER_JSON + '; ' + body + ' } catch(e){ return "EXC:" + String(e).slice(0,140); } })()';
+const parseAsk = (s) => { try { const o = JSON.parse(String(s)); return (o && o.ok) ? o : null; } catch (e) { return null; } };
+
+let planA = null, planB = null;
+// ① 整卷一次作答
+const rA = await c.ev(mkAsk('if(!(window.__cxAsk && __cxAsk.batch)) return "NO-ASK";'
+  + ' return __cxAsk.batch(P,{maxTokens:900}).then(function(x){return JSON.stringify(x);}).catch(function(e){return "ERR:"+e.message;});'));
+planA = parseAsk(rA);
+console.log('   整卷作答: ' + (planA ? ('拿到 ' + Object.keys(planA.answers).length + '/' + askPaper.questions.length + ' 题  tokens=' + planA.tokens) : String(rA).slice(0, 160)));
+// ② 第二遍复核（只重判、不改题面；实测判断题口径会微调，取复核结果）
+if (planA) {
+  const FIRST_JSON = JSON.stringify(planA.answers);
+  const rB = await c.ev(mkAsk('if(!(window.__cxAsk && __cxAsk.review)) return "NO-ASK";'
+    + ' var F = ' + FIRST_JSON + ';'
+    + ' return __cxAsk.review(P,F,{maxTokens:900}).then(function(x){return JSON.stringify(x);}).catch(function(e){return "ERR:"+e.message;});'));
+  planB = parseAsk(rB);
+  console.log('   整卷复核: ' + (planB ? ('拿到 ' + Object.keys(planB.answers).length + ' 题  tokens=' + planB.tokens) : String(rB).slice(0, 160)));
+}
+const planMap = [];
+for (let i = 0; i < askPaper.questions.length; i++) {
+  const k = String(i + 1);
+  let a = (planB && planB.answers[k]) || (planA && planA.answers[k]) || null;
+  if (a && planA && planB && planA.answers[k] && planB.answers[k]) {
+    const same = planA.answers[k].letters.join('') === planB.answers[k].letters.join('');
+    a = { letters: planB.answers[k].letters, raw: planB.answers[k].raw + (same ? '(复核一致)' : '(复核改了: 首答 ' + planA.answers[k].raw + ')'), who: same ? 'both' : 'review' };
+  } else if (a) a = { letters: a.letters, raw: a.raw + '(单遍)', who: planB && planB.answers[k] ? 'review' : 'batch' };
+  planMap[i] = a;
+}
+// ③ 缺题逐题补答（整卷里被漏掉、或整卷调用失败）
+for (let i = 0; i < planMap.length; i++) {
+  if (planMap[i]) continue;
+  const rS = await c.ev(mkAsk('if(!(window.__cxAsk && __cxAsk.single)) return "NO-ASK";'
+    + ' return __cxAsk.single(P,' + i + ',{maxTokens:400}).then(function(x){return JSON.stringify(x);}).catch(function(e){return "ERR:"+e.message;});'));
+  let s = null; try { s = JSON.parse(String(rS)); } catch (e) { }
+  if (s && s.ok && s.letters) { planMap[i] = { letters: s.letters, raw: s.raw + '(单题补)', who: 'single' }; console.log('   #' + (i + 1) + ' 单题补答 → ' + s.letters.join('')); }
+}
+const missAsk = planMap.map((x, i) => x ? null : (i + 1)).filter(Boolean);
+console.log('   整卷覆盖: ' + planMap.filter(Boolean).length + '/' + planMap.length + (missAsk.length ? ('  仍缺: ' + missAsk.join(',')) : ''));
+// --plan-only：只算答案不勾选（安全预览；用来人工核对模型答得对不对）
+if (String(A['plan-only']) === 'true') {
+  console.log('\n--plan-only：以下为模型答案，未做任何点击');
+  planMap.forEach((p, i) => {
+    const q = data.questions[i];
+    console.log('  #' + (i + 1) + ' [' + (q ? q.kind : '?') + '] ' + (p ? p.letters.join('') + '  raw=' + JSON.stringify(p.raw).slice(0, 40) + ' [' + p.who + ']' : '(无答案)')
+      + '  | ' + ((decodedAll[i] && decodedAll[i].stem) || '').slice(0, 70));
+  });
+  c.ws.close(); process.exit(0);
+}
+
+// ④ 兜底：整卷调用整体失败（页面里没有 DS key / 网络不通 / 页面没注入 NetClass）→ 退回逐题 askDs。
+//    ★ 但判断题必须用**修好的映射**：askDs 返回的是选项名 "true"/"fals"（来自 input.value 被截断），
+//      旧写法 /false/i 匹配不上 "fals" → 判断题一律落到默认分支答「对」（这就是原 bug）。
+async function askDsOne(i) {
+  const q = data.questions[i], dq = decodedAll[i];
+  if (!dq || !q) return null;
+  const optionList = q.options.map((o, k) => ({ name: o.letter, data: (dq.options[k] || o.text).slice(0, 120) }));
+  const raw = String(await c.ev(`(function(){
+    if (!(window.NetClass && NetClass.askDs)) return 'NO-MODULE';
+    var r = NetClass.askDs({ type: ${q.kind === 'multiple' ? 2 : (q.kind === 'judge' ? 3 : 1)},
+                             name: ${JSON.stringify(dq.stem.slice(0, 300))},
+                             optionList: ${JSON.stringify(optionList)} });
+    return Promise.resolve(r).then(function(x){ return typeof x === 'string' ? x : JSON.stringify(x); });
+  })()`));
+  if (/NO-MODULE|object Object|^\{|^ERR/.test(raw)) return null;
+  if (q.kind === 'judge') {
+    if (/错|错误|否|fals|false/i.test(raw)) return { letters: ['B'], raw: raw + '(兜底askDs)', who: 'askDs' };
+    if (/对|正确|是|true/i.test(raw)) return { letters: ['A'], raw: raw + '(兜底askDs)', who: 'askDs' };
+    return null;
+  }
+  let ls = [...new Set((raw.toUpperCase().match(/[A-H]/g) || []))].sort();
+  if (!ls.length) return null;
+  if (q.kind === 'single') ls = [ls[0]];
+  return { letters: ls, raw: raw + '(兜底askDs)', who: 'askDs' };
+}
+
+// ---------------------------------------------------------------- 勾选
 const OPT_OK = /^[A-D]$/;
 let picked = 0, answered = 0;
 for (let i = 0; i < data.questions.length && i < LIMIT; i++) {
   const q = data.questions[i], dq = decodedAll[i];
   if (!dq) continue;
-  const optionList = q.options.map((o, k) => ({ name: o.letter, data: (dq.options[k] || o.text).slice(0, 120) }));
-  let ans = await c.ev(`(function(){
-    if (!(window.NetClass && NetClass.askDs)) return 'NO-MODULE';
-    var r = NetClass.askDs({ type: ${q.kind === 'multiple' ? 2 : (q.kind === 'judge' ? 3 : 1)},
-                             name: ${JSON.stringify(dq.stem.slice(0, 300))},
-                             optionList: ${JSON.stringify(optionList)} });
-    return Promise.resolve(r).then(function(x){
-      if (typeof x === 'string') return x;
-      if (x && (x.answer || x.a || x.letters)) return String(x.answer || x.a || x.letters);
-      return JSON.stringify(x).slice(0, 120);
-    });
-  })()`);
-  const raw = String(ans);
-  if (/NO-MODULE|object Object|^\{|ERR/.test(raw)) { console.log('  #' + (i + 1) + ' 作答失败: ' + raw.slice(0, 80)); continue; }
-  let letters = (raw.toUpperCase().match(/[A-D]/g) || []);
-  // 判断题：对/错 映射到 A/B
-  if (q.kind === 'judge') {
-    // ★★ 必须大小写不敏感（2026-10-15 主线修）：DeepSeek 返回的是小写 "true"/"false"，
-    //   而旧正则是大写 TRUE/FALSE → **匹配不上** → 落到默认分支 letters=['A']
-    //   → **所有判断题都被答成"对"**（实测 6 道判断题全 A，白丢一半分）。
-    if (/对|正确|是|true/i.test(raw)) letters = ['A'];
-    else if (/错|错误|否|false/i.test(raw)) letters = ['B'];
-    else if (!letters.length) letters = ['A'];
-    letters = letters.slice(0, 1);
-  } else if (q.kind === 'single') {
-    letters = letters.slice(0, 1);
-  }
+  // ★ 答案来自上面的"整卷一问 + 复核 + 单题兜底"；这里不再调用 askDs（那个路径的判断题是坏的）
+  let plan = planMap[i];
+  if (!plan) { plan = await askDsOne(i); if (plan) console.log('  #' + (i + 1) + ' 走兜底 askDs → ' + plan.letters.join('')); }
+  if (!plan) { console.log('  #' + (i + 1) + ' 无答案（整卷与单题都失败）→ 留空'); continue; }
+  const raw = String(plan.raw);
+  let letters = plan.letters.slice();
+  if (q.kind === 'judge' || q.kind === 'single') letters = letters.slice(0, 1);
   if (!letters.length) { console.log('  #' + (i + 1) + ' 没拿到字母: ' + raw.slice(0, 60)); continue; }
   answered++;
-  console.log('  #' + (i + 1) + ' 解析: kind=' + q.kind + ' name=' + q.name + ' raw=[' + raw.slice(0, 60).replace(/\n/g, ' ') + '] → letters=' + letters.join(''));
+  console.log('  #' + (i + 1) + ' 解析: kind=' + q.kind + ' name=' + q.name + ' [' + plan.who + '] raw=[' + raw.slice(0, 60).replace(/\n/g, ' ') + '] → letters=' + letters.join(''));
   // ★ 学习通真正的"勾选"是 LI 上的 onclick="addcheck(qid)"，同时把选择写进隐藏域 answer<qid>。
   //   checkbox 本身是 tabindex=-1 的受控元素，直接点 input 不改状态（实测 "notfound"/无效）。
   const qid = (String(q.name).match(/(\d{6,})/) || [])[1] || q.name;
@@ -274,7 +358,7 @@ for (let i = 0; i < data.questions.length && i < LIMIT; i++) {
     var ul = root.querySelector('ul') || root;
     var lis = Array.from(ul.querySelectorAll('li'));
     var want = ${JSON.stringify(letters)};
-    var wantIdx = want.map(function(L){ return 'ABCD'.indexOf(L); });
+    var wantIdx = want.map(function(L){ var ci = L.charCodeAt(0) - 65; return (ci >= 0 && ci < 26) ? ci : -1; });
     var res = [];
     // 单选/判断：先把其它选项清掉
     if (${JSON.stringify(q.kind)} !== 'multiple') {
@@ -413,53 +497,128 @@ if (SUBMIT && data.submitBtn && (uploadable || !NEED_ALL) && !SAVE_ONLY) {
   if (!b2) { console.log('找不到提交按钮'); }
   else {
     console.log('点提交 (' + b2.x + ',' + b2.y + ')  size=' + b2.w + 'x' + b2.h + ' inVp=' + b2.inVp + ' hit=' + b2.hit);
-    if (b2.inVp && b2.hit && /A\.|SPAN|BUTTON/i.test(b2.hit)) { console.log('   → 真实鼠标'); await click(b2.x, b2.y); }
-    // 坐标层不可靠（按钮在 3 层 iframe 底部，鼠标事件经常打到别处）→ **始终**用 DOM 点击兜底：
-    //   该 <a> 的 onclick 就是 btnBlueSubmit()，DOM click 等价用户点击。
-    if (b2.inVp && b2.hit && /A\.|SPAN|BUTTON/i.test(b2.hit)) { /* 已用真实鼠标 */ }
+    // ★★★ 2026-10-16 修：**只走 DOM 点击，且必须点中「提交」**
+    //   旧代码先按坐标点（窗口 512x384，按钮在第 3 层 iframe 底部 → inVp=false 点不到），
+    //   再用 `document.querySelectorAll('a.workBtnIndex')[0]` 兜底 —— 而「暂时保存」和「提交」
+    //   **共用 workBtnIndex 这个 class**，第一个永远是「暂时保存」(onclick=noSubmit)。
+    //   实测后果：弹 alert「保存成功」、#enc 一直为空、任务点停在"待完成"（等于没交）。
+    //   正确判据：onclick 里有 btnBlueSubmit。
+    //   ⚠️ 本段在模板字符串里，注释中禁用反引号。
     const rDom = await c.ev(`(function(){
-      function walk(r, path, sel){ try { var e=r.querySelector(sel); if(e) return e;
+      function collect(r, sel, out){ try { Array.from(r.querySelectorAll(sel)).forEach(function(e){ out.push(e); });
         var fs=Array.from(r.querySelectorAll('iframe'));
-        for (var i=0;i<fs.length;i++){ var d=null; try{d=fs[i].contentDocument}catch(x){} if(d){ var q=walk(d, path.concat([i]), sel); if(q) return q; } } } catch(x){} return null; }
-      var b = walk(document, [], 'a.workBtnIndex');
+        for (var i=0;i<fs.length;i++){ var d=null; try{d=fs[i].contentDocument}catch(x){} if(d) collect(d, sel, out); } } catch(x){} return out; }
+      var cands = collect(document, 'a,button,input[type=button],input[type=submit]', []);
+      var b = null;
+      cands.forEach(function(x){
+        if (b) return;
+        if (/btnBlueSubmit/.test(String(x.getAttribute('onclick')||''))) b = x;
+      });
+      if (!b) { for (var i=0;i<cands.length;i++){ var t2=((cands[i].innerText||cands[i].value||'')).trim(); if (/^(提交|交卷)$/.test(t2)) { b = cands[i]; break; } } }
       if (!b) return 'nobtn';
-      try { b.click(); return 'clicked'; } catch(e){ return 'err:' + e.message; }
+      var info = { t: ((b.innerText||'')).trim().slice(0,8), cls: String(b.className).slice(0,44), oc: String(b.getAttribute('onclick')||'').slice(0,40) };
+      try { b.click(); return 'clicked ' + JSON.stringify(info); } catch(e){ return 'err:' + e.message; }
     })()`);
     console.log('   DOM 点击提交: ' + rDom);
-    // ★ 提交要求 enc（由 btnBlueSubmit→validateTimeNew→toadd 异步写入 #enc）；
-    //   enc 为空时服务端只会"保存"不会"提交"（实测：alert 提示"保存成功"但任务点仍是待完成）。
-    for (let w = 0; w < 15; w++) {
+    // ★★ 2026-10-16 修（提交失败的第二个真根因）：点「提交」后站点弹**站内确认框**（确定/取消）。
+    //   旧代码把"扫描确认框"放在 30 秒 enc 轮询**之后** → 确认框一直挂着没人点 → #enc 永远是空
+    //   → 服务端只"保存"不"提交"，任务点停在"待完成"（实测 alert「保存成功」就是这么来的）。
+    //   正确顺序：点提交 → **边等边点确认框** → 等 enc/成绩回显。
+    //   ⚠️ 本段在模板字符串里，注释中禁用反引号。
+    // ⚠️ 确认框**必须用 DOM 点击**：它的坐标是 (367,1643)，而窗口只有 512x384 ——
+    //   派真实鼠标事件到视口外的坐标等于没点（实测点 3 次确认框都没反应）。
+    async function scanConfirm(doClick) {
+      const cf = await c.ev(`(function(){
+        function collect(r, sel, out){ try { Array.from(r.querySelectorAll(sel)).forEach(function(e){ out.push(e); });
+          var fs=Array.from(r.querySelectorAll('iframe'));
+          for (var i=0;i<fs.length;i++){ var d=null; try{d=fs[i].contentDocument}catch(x){} if(d) collect(d, sel, out); } } catch(x){} return out; }
+        var cands = collect(document, 'a,button,div,span,input[type=button]', []);
+        var best = null, bestScore = -1;
+        cands.forEach(function(e){
+          var t = (e.innerText||e.value||'').trim();
+          if (!/^(确定|确认|是|继续提交)$/.test(t)) return;
+          if (!(e.offsetWidth||e.offsetHeight)) return;
+          var cls = String(e.className||'');
+          var s = 0;
+          if (/blue|btn|confirm|pop|sure/i.test(cls)) s += 2;
+          if (e.tagName === 'A' || e.tagName === 'BUTTON') s += 1;
+          if (s > bestScore) { bestScore = s; best = e; }
+        });
+        if (!best) return 'no-confirm';
+        var info = { t: (best.innerText||'').trim().slice(0,8), cls: String(best.className).slice(0,30), tag: best.tagName, oc: String(best.getAttribute('onclick')||'').slice(0,50) };
+        if (${doClick ? 'true' : 'false'}) { try { best.click(); return 'clicked ' + JSON.stringify(info); } catch(e){ return 'err:' + e.message; } }
+        return JSON.stringify(info);
+      })()`);
+      return cf;
+    }
+    let clickedConfirm = 0, lastEnc = '';
+    for (let w = 0; w < 20; w++) {
       await sleep(2000);
       const st2 = await c.ev(`(function(){
-        function findDoc(sel){ var hit=null; (function walk(r,p,d){ try { if(r.querySelector&&r.querySelector(sel)){ hit=r; return; } if(d>6) return;
+        function findDoc(sel){ var hit=null; (function walk(r,p,d){ try{ if(r.querySelector&&r.querySelector(sel)){ hit=r; return; } if(d>6) return;
           Array.from(r.querySelectorAll('iframe')).forEach(function(f){ var dd=null; try{dd=f.contentDocument}catch(e){} if(dd&&!hit) walk(dd,p,d+1); }); }catch(e){} })(document,0,0); return hit; }
-        var doc = findDoc('.TiMu'); if (!doc) return null;
+        var doc = findDoc('.TiMu'); if (!doc) return JSON.stringify({ gone: true });
         var e = doc.getElementById('enc');
-        var ans = [];
-        Array.from(doc.querySelectorAll('input[name^="answer"]')).forEach(function(i){ if (i.type === 'hidden' && i.name.indexOf('answertype') < 0) ans.push(i.value); });
-        return JSON.stringify({ enc: e ? e.value : null, answers: ans.join('|').slice(0, 60), url: location.href.slice(-40) });
-      })()`);
-      if (st2 && typeof st2 === 'string') { console.log('   [' + (w * 2) + 's] ' + st2); try { const o = JSON.parse(st2); if (o.enc && o.enc.length > 8) break; } catch (e) { } }
+        var t = (doc.body.innerText||'').replace(/\\s+/g,' ');
+        return JSON.stringify({ enc: e ? String(e.value).slice(0,14) : null, done: /本次成绩|已完成|已交卷/.test(t), head: t.slice(0, 40) }); })()`);
+      if (st2 && typeof st2 === 'string') {
+        lastEnc = String(st2);
+        let o = null; try { o = JSON.parse(String(st2)); } catch (e) { }
+        if (w % 3 === 0) console.log('   [' + (w * 2) + 's] ' + String(st2).slice(0, 130));
+        if (o && o.enc && o.enc.length > 8) { console.log('   ✅ enc 已写入 → 提交已发出'); break; }
+        if (o && (o.done || o.gone)) { console.log('   ✅ 页面已回显提交结果'); break; }
+      }
+      const cInfo = await scanConfirm(false);
+      if (cInfo && String(cInfo).indexOf('no-confirm') < 0 && clickedConfirm < 3) {
+        console.log('  确认框: ' + String(cInfo).slice(0, 110));
+        const rc = await scanConfirm(true);          // 真点（DOM）——坐标点击到不了视口外
+        console.log('   → ' + String(rc).slice(0, 110));
+        clickedConfirm++;
+        await sleep(2500);
+      }
+    }
+    // 兜底：确认框点过、enc 仍空 → 直接调站点自己的 btnBlueSubmit()（它内部会写 enc 再提交）
+    if (!/,enc":"[0-9a-f]{8}/.test(lastEnc)) {
+      const r2 = await c.ev(`(function(){ function walkW(r){ try { if (r.defaultView && typeof r.defaultView.btnBlueSubmit === 'function') return r.defaultView; var fs=Array.from(r.querySelectorAll('iframe')); for (var i=0;i<fs.length;i++){ var d=null; try{d=fs[i].contentDocument}catch(x){} if(d){ var q=walkW(d); if(q) return q; } } } catch(x){} return null; }
+        var w2 = walkW(document); if (!w2) return 'no-fn'; try { w2.btnBlueSubmit(); return 'called-btnBlueSubmit'; } catch(e){ return 'err:'+e.message; } })()`);
+      console.log('   兜底 btnBlueSubmit(): ' + r2 + '   (enc 采样 ' + lastEnc.slice(0, 70) + ')');
+      await sleep(4000);
     }
   }
   await sleep(3500);
+  // 收尾：如果还有确认框挂着（同一坐标点击不到），再用 DOM 点击补一次
   const cf = await c.ev(`(function(){
-    var out = [];
-    (function scan(r, path, depth){ try {
-      Array.from(r.querySelectorAll('a,button,span,div,input[type=button]')).forEach(function(e){
-        var t = (e.innerText||e.value||'').trim();
-        if (/^(确定|确认|是|继续提交)$/.test(t) && (e.offsetWidth||e.offsetHeight)) { var b = e.getBoundingClientRect(); out.push({ x: Math.round(b.left+b.width/2), y: Math.round(b.top+b.height/2), t: t }); }
-      });
-      if (depth > 4) return;
-      Array.from(r.querySelectorAll('iframe')).forEach(function(f,i){ var d=null; try{d=f.contentDocument}catch(e){} if(d) scan(d, path.concat([i]), depth+1); });
-    } catch(e){} })(document, [], 0);
-    return JSON.stringify(out);
+    function collect(r, sel, out){ try { Array.from(r.querySelectorAll(sel)).forEach(function(e){ out.push(e); });
+      var fs=Array.from(r.querySelectorAll('iframe'));
+      for (var i=0;i<fs.length;i++){ var d=null; try{d=fs[i].contentDocument}catch(x){} if(d) collect(d, sel, out); } } catch(x){} return out; }
+    var cands = collect(document, 'a,button,div,span,input[type=button]', []);
+    var best = null, bs = -1;
+    cands.forEach(function(e){
+      var t = (e.innerText||e.value||'').trim();
+      if (!/^(确定|确认|是|继续提交)$/.test(t)) return;
+      if (!(e.offsetWidth||e.offsetHeight)) return;
+      var cls = String(e.className||''); var s = 0;
+      if (/blue|btn|confirm|pop|sure/i.test(cls)) s += 2;
+      if (s > bs) { bs = s; best = e; }
+    });
+    if (!best) return 'no-confirm';
+    var inf = (best.innerText||'').trim().slice(0,8) + ' cls=' + String(best.className).slice(0,26);
+    try { best.click(); return 'clicked ' + inf; } catch(e){ return 'err:' + e.message; }
   })()`);
-  let confirms = [];
-  try { confirms = JSON.parse(cf || '[]'); } catch (e) { confirms = []; }
-  for (const co of confirms.slice(0, 2)) { console.log('  确认框: ' + co.t + ' @' + co.x + ',' + co.y); await click(co.x, co.y); await sleep(2500); }
+  if (String(cf).indexOf('no-confirm') < 0) { console.log('  收尾确认框(DOM): ' + String(cf).slice(0, 110)); await sleep(3000); }
   await sleep(4000);
   const after = await c.ev(`(function(){ function findDoc(sel){ var hit=null; (function walk(r,p,d){ try{ if(r.querySelector&&r.querySelector(sel)){ hit=r; return; } if(d>6) return; Array.from(r.querySelectorAll('iframe')).forEach(function(f){ var dd=null; try{dd=f.contentDocument}catch(e){} if(dd&&!hit) walk(dd,p,d+1); }); }catch(e){} })(document,0,0); return hit; } var d = findDoc('.TiMu'); return d ? (d.body.innerText||'').replace(/\\s+/g,' ').slice(0,240) : 'no-doc'; })()`);
   console.log('提交后页面: ' + String(after).slice(0, 200));
+  // ★ 成绩取证（2026-10-16 加）：提交后页面会回显「本次成绩：N」与每题的「得分：X」。
+  //   把它写进日志 —— 这是唯一能自动核对"这一卷答得怎么样"的客观数字（站点不回显正确答案）。
+  for (let w = 0; w < 6; w++) {
+    const sc = await c.ev(`(function(){ function findDoc(sel){ var hit=null; (function walk(r,p,d){ try{ if(r.querySelector&&r.querySelector(sel)){ hit=r; return; } if(d>6) return; Array.from(r.querySelectorAll('iframe')).forEach(function(f){ var dd=null; try{dd=f.contentDocument}catch(e){} if(dd&&!hit) walk(dd,p,d+1); }); }catch(e){} })(document,0,0); return hit; } var d = findDoc('.TiMu'); if(!d) return null; var t = (d.body.innerText||'').replace(/\\s+/g,' ');
+    var m = t.match(/本次成绩[:：]\\s*([0-9.]+)/); if (!m) return null;
+    var parts = t.split(/(?=【(?:判断题|单选题|多选题|填空题)】)/); var st = {};
+    parts.forEach(function(p){ var k = (p.match(/^【(判断题|单选题|多选题|填空题)】/)||[])[1]; if(!k) return; var s = (p.match(/得分：\\s*([0-9.]+)/)||[])[1]; st[k] = st[k] || {n:0,ok:0}; st[k].n++; if (Number(s) > 0) st[k].ok++; });
+    return JSON.stringify({ score: Number(m[1]), detail: st }); })()`);
+    if (sc && typeof sc === 'string') { console.log('   ★ 本次成绩: ' + sc); break; }
+    await sleep(3000);
+  }
 }
 c.ws.close();
