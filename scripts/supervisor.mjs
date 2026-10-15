@@ -84,7 +84,7 @@ const TARGETS = [
   { name: '进度记录', match: 'progress-report\\.mjs', uniq: true, args: ['scripts/progress-report.mjs', '--every=300'], out: 'runs/progress-console.log', err: 'runs/progress.err.log' },
   // 长春驱动归 Agent B 独占（9228 同时只能一个会话，多开必 423 Locked）。
   // ★ 主管只【监视】不【启动】它，避免和 Agent B 抢标签（2026-10-15 主线让路）。
-  { name: '长春驱动', match: 'cc-auto\\.mjs --port', uniq: true, args: ['scripts/cc-auto.mjs', '--port', '9228', '--tab', '0', '--secs', '10'], out: 'runs/cc-driver.log', err: 'runs/cc-driver.err.log', watchOnly: true },
+  { name: '长春驱动', match: 'cc-auto\\.mjs --port', uniq: true, args: ['scripts/cc-auto.mjs', '--port', '9228', '--tab', '0', '--secs', '10'], out: 'runs/cc-driver.log', err: 'runs/cc-driver.err.log' },
   { name: '学习通驱动', match: 'cx-auto\\.mjs --port', uniq: true, args: ['scripts/cx-auto.mjs', '--port', '9227', '--secs', '10', '--maxmins', '400'], out: 'runs/cx-driver.out.log', err: 'runs/cx-driver.err.log' , watchOnly: true },
 ];
 
