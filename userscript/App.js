@@ -1575,8 +1575,98 @@
     return h ? (h + 'h' + (m ? m + 'm' : '')) : (m + 'min');
   }
 
-  // ------------------------------------------------------------ 控制面板
-  let panelEl = null;
+  // ------------------------------------------------------------ 设置面板
+  // ★ 声明式配置表（思路来自 OCS：reference/ocsjs .../cx.ts 的 settings schema）
+  //   加一项只要往 SETTINGS_SCHEMA 里加一行，UI 与存储自动生效。
+  //   跨进程项（如"章测试仅保存不提交"）写进 localStorage，由 scripts/cx-answer-quiz.mjs 读取。
+  const SETTINGS_SCHEMA = [
+    { group: '基础' },
+    { key: 'enabled', label: '自动运行', type: 'bool', desc: '总开关。关掉后页面内的模块不再自动操作（也会同步暂停外部驱动器）' },
+    { key: 'autoPlay', label: '自动播放', type: 'bool', desc: '视频暂停时自动 continue' },
+    { key: 'mute', label: '静音', type: 'bool', desc: '自动静音避免声音打扰' },
+    { key: 'rate', label: '播放倍速', type: 'select', options: ['1', '1.25', '1.5', '2', '3'], desc: '站点自带的最高档位优先；长春记账硬卡 1.25x，设更高只会增加重播' },
+
+    { group: '视频内弹题' },
+    { key: 'autoQuiz', label: '弹题自动作答', type: 'bool', desc: '视频里弹出的题自动问 DeepSeek 并作答' },
+    { key: 'quizDelayMs', label: '答题延迟(毫秒)', type: 'num', desc: '弹出后等多久再作答，太快容易被判异常' },
+
+    { group: '章节测试（学习通）' },
+    { key: 'cxSaveOnly', label: '仅保存，不提交', type: 'bool', desc: '★ 答完只暂存（调站点 noSubmit()），不点提交。想自己检查完再交就打开它' },
+    { key: 'cxNeedAll', label: '必须全部作答才提交', type: 'bool', def: true, desc: '★ 默认开。完成率不到 100% 时只保存不提交（照 OCS 的 uploadable 判据）' },
+    { key: 'cxAutoSubmit', label: '答完自动提交', type: 'bool', def: true, desc: '关掉则答完停下等你手动提交' },
+
+    { group: '跳转' },
+    { key: 'autoNext', label: '完成后自动下一节', type: 'bool', desc: '一节看完自动进入下一节' },
+    { key: 'doneWaitSec', label: '完成等待(秒)', type: 'num', desc: '判定完成后等多久再跳转' },
+
+    { group: '数据' },
+    { key: 'dsEnable', label: '启用 DeepSeek 作答', type: 'bool', desc: '关掉则只用本地题库' },
+    { key: 'report', label: '上报统计', type: 'bool', desc: '向 NetClassServer 上报运行状态' },
+  ];
+
+  let cfgEl = null;
+  function mountSettings() {
+    if (cfgEl) { cfgEl.remove(); cfgEl = null; return; }
+    cfgEl = document.createElement('div');
+    cfgEl.id = 'netclass-settings';
+    const C = { bg: '#191512', bd: '#3a2f24', fg: '#f0e7db', mut: '#9b8d7c', accent: '#e0a253' };
+    cfgEl.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483647;'
+      + 'font:12px/1.6 "Segoe UI",system-ui,"Microsoft YaHei",sans-serif;'
+      + 'background:' + C.bg + ';color:' + C.fg + ';border:1px solid ' + C.accent + ';border-radius:6px;'
+      + 'padding:10px 12px;width:330px;max-height:74vh;overflow:auto;user-select:none';
+    const draw = () => {
+      const rows = SETTINGS_SCHEMA.map(it => {
+        if (it.group) return '<div style="margin:9px 0 4px;color:' + C.accent + ';font-weight:600;border-bottom:1px solid ' + C.bd + ';padding-bottom:2px">' + it.group + '</div>';
+        const cur = CFG[it.key];
+        const desc = it.desc ? '<div style="color:' + C.mut + ';font-size:11px;margin-top:1px">' + it.desc + '</div>' : '';
+        let ctl;
+        if (it.type === 'bool') {
+          const on = (cur === undefined ? !!it.def : !!cur);
+          ctl = '<input type="checkbox" data-k="' + it.key + '"' + (on ? ' checked' : '') + ' style="margin:2px 6px 0 0;vertical-align:top">';
+        } else if (it.type === 'select') {
+          ctl = '<select data-k="' + it.key + '" style="background:#241d17;color:' + C.fg + ';border:1px solid ' + C.bd + ';border-radius:3px;padding:1px 4px">'
+            + it.options.map(o => '<option value="' + o + '"' + (String(cur) === o ? ' selected' : '') + '>' + o + '</option>').join('') + '</select>';
+        } else {
+          ctl = '<input type="number" data-k="' + it.key + '" value="' + (cur === undefined ? (it.def || 0) : cur) + '" style="width:76px;background:#241d17;color:' + C.fg + ';border:1px solid ' + C.bd + ';border-radius:3px;padding:1px 4px">';
+        }
+        return '<div style="margin:5px 0">' + ctl + '<b>' + it.label + '</b>' + desc + '</div>';
+      }).join('');
+      cfgEl.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
+        + '<b style="color:' + C.accent + '">NetClass 设置</b>'
+        + '<button data-a="close" style="background:transparent;color:' + C.fg + ';border:1px solid ' + C.bd + ';border-radius:4px;padding:2px 8px;cursor:pointer">关闭</button>'
+        + '</div>' + rows
+        + '<div style="margin-top:9px;color:' + C.mut + ';font-size:11px">改动即时生效，存在 localStorage 的 ' + CFG_KEY + '</div>'
+        + '<div style="margin-top:7px;display:flex;gap:6px"><button data-a="saveall" style="flex:1;background:transparent;color:' + C.fg + ';border:1px solid ' + C.bd + ';border-radius:4px;padding:3px;cursor:pointer">保存并同步到驱动器</button></div>';
+      cfgEl.querySelectorAll('[data-k]').forEach(el => {
+        el.onchange = () => {
+          const k = el.dataset.k;
+          if (el.type === 'checkbox') CFG[k] = el.checked;
+          else if (el.type === 'number') CFG[k] = Number(el.value);
+          else CFG[k] = isNaN(Number(el.value)) ? el.value : Number(el.value);
+          saveCfg();
+          syncCrossProcess();
+        };
+      });
+      cfgEl.querySelector('[data-a="close"]').onclick = () => mountSettings();
+      cfgEl.querySelector('[data-a="saveall"]').onclick = () => { saveCfg(); syncCrossProcess(); draw(); };
+    };
+    draw();
+    document.body.appendChild(cfgEl);
+  }
+
+  /** 把"跨进程"的设置写进 localStorage —— 外部驱动器（cx-answer-quiz.mjs 等）读这些键 */
+  function syncCrossProcess() {
+    try {
+      localStorage.setItem('ncCx:saveOnly', CFG.cxSaveOnly ? '1' : '0');
+      localStorage.setItem('ncCx:needAll', CFG.cxNeedAll === false ? '0' : '1');
+      localStorage.setItem('ncCx:autoSubmit', CFG.cxAutoSubmit === false ? '0' : '1');
+      localStorage.setItem('ncCc:paused', CFG.enabled ? '0' : '1');
+      localStorage.setItem('ncCx:paused', CFG.enabled ? '0' : '1');
+    } catch (_) { }
+  }
+  try { window.NetClassSettings = { get: () => CFG, set: (k, v) => { CFG[k] = v; saveCfg(); syncCrossProcess(); }, mount: mountSettings }; } catch (_) { }
+
+
   function mountPanel() {
     if (!CFG.panel || panelEl) return;
     panelEl = document.createElement('div');
@@ -1614,7 +1704,8 @@
            ${btn('rate', '倍速 ' + effRate() + 'x')}
            ${btn('quiz', '答题')}
            ${btn('next', '下一节')}
-           ${btn('hide', '收起')}
+           ${btn('settings', '设置')}
+            ${btn('hide', '收起')}
          </div>`;
       panelEl.querySelectorAll('button').forEach(b => {
         b.onmouseenter = () => { b.style.background = '#3a3a46'; };
@@ -1644,6 +1735,7 @@
           }
           if (a === 'quiz') { P_ADAPTER && P_ADAPTER.poll(); }
           if (a === 'next') { gotoNext('panel'); }
+          if (a === 'settings') { try { mountSettings(); } catch (e) { warn('设置面板打开失败', e); } }
           if (a === 'hide') { panelEl.style.display = 'none'; setTimeout(() => { if (panelEl) panelEl.style.display = ''; }, 8000); }
           draw();
         };
