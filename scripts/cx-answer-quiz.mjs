@@ -154,6 +154,39 @@ const dec = await ensureDecoder();
 if (dec.err) { console.log('解密链路未就绪: ' + dec.err); process.exit(1); }
 console.log('解密链路就绪');
 
+/** ★★ 换页重载密文字体（2026-10-15 主线补）——这是"题面乱码"问题的真正修法。
+ *  学习通**按页内嵌字体子集**：每换一页，font-cxsecret 的 base64 TTF 就换一份。
+ *  解密器的 c2g（字符码→字形 id）是从**当前这份字体**建的；不重载就会拿旧表去比对，
+ *  结果是"解不出来"（实测：在测验页上 c2g.size 仍停在上一页的 109，解码原样返回）。
+ *  做法：从（含 iframe 的）页面里捞出 font-cxsecret 的 base64 → __cxTT.load() → 清解码缓存。 */
+async function reloadCipherFont() {
+  const b64 = await c.ev(`(function(){
+    var hit = null;
+    (function walk(r, d){
+      if (hit || d > 4) return;
+      try {
+        Array.from(r.querySelectorAll('style')).forEach(function(s){
+          if (hit) return;
+          var t = s.textContent || '';
+          var m = t.match(/font-cxsecret[^}]*?base64,([A-Za-z0-9+/=]+)/);
+          if (m && m[1] && m[1].length > 1000) hit = m[1];
+        });
+        Array.from(r.querySelectorAll('iframe')).forEach(function(f){
+          if (hit) return;
+          var dd = null; try { dd = f.contentDocument } catch (e) { }
+          if (dd) walk(dd, d + 1);
+        });
+      } catch (e) { }
+    })(document, 0);
+    return hit;
+  })()`);
+  if (!b64) return 'no-font-found';
+  const r = await c.ev('(async function(){ try { await window.__cxTT.load("' + b64 + '"); if (window.__cxDecode) window.__cxDecode._cache = {}; return "loaded c2g=" + (window.__cxTT.c2g && window.__cxTT.c2g.size || "?"); } catch(e) { return "ERR " + String(e).slice(0,50); } })()');
+  return r;
+}
+const fontReload = await reloadCipherFont();
+console.log('   密文字体重载: ' + fontReload);
+
 // ---------------------------------------------------------------- 解码题面
 let decodedAll = [];
 for (const q of data.questions) {
