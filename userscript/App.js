@@ -17,8 +17,9 @@
   const HOST = location.hostname;
   const PLATFORM = /shengshengketang/i.test(HOST) ? 'shengsheng'
     : /bjqiyang/i.test(HOST) ? 'qiyang'
-      : /webtrn\.cn/i.test(HOST) ? 'webtrn' : 'unknown';
-  const PLATFORM_LABEL = { shengsheng: '心理学导论', qiyang: '职业培训', webtrn: '教师培训', unknown: '未知平台' }[PLATFORM];
+      : /webtrn\.cn/i.test(HOST) ? 'webtrn'
+        : /chaoxing\.com/i.test(HOST) ? 'chaoxing' : 'unknown';
+  const PLATFORM_LABEL = { shengsheng: '心理学导论', qiyang: '职业培训', webtrn: '教师培训', chaoxing: '学习通', unknown: '未知平台' }[PLATFORM];
   const log = (...a) => console.log(NS, ...a);
   const warn = (...a) => console.warn(NS, ...a);
   const now = () => Date.now();
@@ -1337,9 +1338,70 @@
     },
   };
 
+  // ------------------------------------------------------------ 学习通（超星）
+  /**
+   * 学习通 = 章节树 + 任务点（视频/文档/PPT/章测试/讨论），比 shengsheng 更碎，所以走"任务点遍历"而不是"逐课循环"。
+   * 本适配器先做**只读监看与进度统计**（面板要显示处理过程）；播放/自动切任务点等写操作按新平台接入七步逐步补。
+   * 结构事实（2026-10-14 实测）：课程页 mooc1.chaoxing.com/mooc-ans/mycourse/studentcourse?courseId=…&clazzid=…
+   *   章节节点用 [class*=chapter] 系列类名；任务点标题形如 `1.1.1.1 标题⑴`，后面常跟一个数字=该节点任务点数。
+   */
+  const ADAPTER_CHAOXING = {
+    id: 'chaoxing',
+    pageKind() {
+      const p = location.pathname + location.search;
+      if (/studentcourse|mycourse/i.test(p)) return 'course';
+      if (/knowledge|courseware|chapter/i.test(p)) return 'chapter';
+      if (/work\/|exam|test|quiz|jobid/i.test(p)) return 'exam';
+      if (/passport|login/i.test(p)) return 'login';
+      return 'other';
+    },
+    /** 任务点清单：从章节树里抽 {name, marks}；marks 是节点后面那个数字（≈任务点数） */
+    taskPoints() {
+      const out = [];
+      const nodes = Array.from(document.querySelectorAll('[class*=chapter_item],[class*=chapterItem],[class*=catalog_item],.chapter'));
+      for (const n of nodes) {
+        const t = (n.innerText || '').replace(/\s+/g, ' ').trim();
+        if (!t || t.length > 80) continue;
+        const m = t.match(/^([\d.]+\s*)?([^0-9]{2,40}?)\s*(\d+)?$/);
+        out.push({ name: t.slice(0, 40), raw: t.slice(0, 60) });
+      }
+      return out.slice(0, 200);
+    },
+    /** 面板/进度：任务点数与"已完成"数（完成态用类名判断：finish|complete|done|已完成|点过） */
+    progressInfo() {
+      const nodes = Array.from(document.querySelectorAll('[class*=chapter_item],[class*=chapterItem],[class*=catalog_item],.chapter'));
+      if (!nodes.length) return null;
+      let total = 0, done = 0;
+      for (const n of nodes) {
+        const cls = String(n.className || '');
+        const txt = (n.innerText || '').replace(/\s+/g, ' ');
+        const cnt = Number((txt.match(/\s(\d+)\s*$/) || [])[1] || 0);   // 节点后的数字 ≈ 任务点数
+        const isDone = /finish|complete|done|已完成|已学/.test(cls) || /已完成|已学/.test(txt);
+        if (cnt > 0) total += cnt;
+        else if (!/^[\d.]/.test(txt)) continue;
+        if (isDone && cnt > 0) done += cnt;
+        else if (isDone) done += 1;
+      }
+      if (!total) total = nodes.length;
+      if (!done) done = nodes.filter(n => /finish|complete|done|已完成|已学/.test(String(n.className || '') + (n.innerText || ''))).length;
+      return { total, done, pct: total ? Math.round(done / total * 100) : 0, remainSec: 0, etaSec: 0, unit: '任务点' };
+    },
+    player() { return document.querySelector('video') || null; },
+    onResponse() { },
+    resetRound() { },
+    async poll() {
+      if (state.loopTicks % 10 === 0) {
+        const pr = this.progressInfo();
+        state.cx = { kind: this.pageKind(), title: document.title.slice(0, 30), progress: pr, at: now() };
+        if (pr) log('学习通监看', this.pageKind(), pr.done + '/' + pr.total, pr.pct + '%');
+      }
+    }
+  };
+
   const P_ADAPTER = PLATFORM === 'shengsheng' ? ADAPTER_SHENGSHENG
     : PLATFORM === 'qiyang' ? ADAPTER_QIYANG
-      : PLATFORM === 'webtrn' ? ADAPTER_WEBTRN : null;
+      : PLATFORM === 'webtrn' ? ADAPTER_WEBTRN
+        : PLATFORM === 'chaoxing' ? ADAPTER_CHAOXING : null;
 
   // ------------------------------------------------------------ 收工：全部刷完
   const DONE_KEY = 'netclass.done.' + PLATFORM;
@@ -1408,6 +1470,11 @@
    */
   function courseProgress() {
     try {
+      // 平台自带口径优先（学习通=任务点、其它平台=课时列表）
+      if (P_ADAPTER && typeof P_ADAPTER.progressInfo === 'function') {
+        const pi = P_ADAPTER.progressInfo();
+        if (pi) return pi;
+      }
       const toSec = s => { if (!s) return 0; const p = String(s).split(':').map(Number); return p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : p[0] * 60 + p[1]; };
       let rows = Array.from(document.querySelectorAll('.lesson-item'));
       if (!rows.length) rows = Array.from(document.querySelectorAll('li[class*=lesson]')).filter(e => !/lesson-status/.test(String(e.className)));

@@ -27,6 +27,9 @@ const LAPTOP = 'WJX@192.168.1.8';
 const SSH_KEY = 'C:/Users/Administrator/.ssh/taskmesh_windows_laptop_ed25519';
 const CHROME = 'C:\\Users\\WJX\\AppData\\Local\\Programs\\OCS Desktop\\resources\\bin\\chrome\\chrome\\chrome.exe';
 const EXT_TM = 'C:/Users/WJX/AppData/Roaming/OCS Desktop/downloads/extensions/tampermonkey';
+// ★ 新平台（如学习通）要看到 NetClass 面板/模块，必须把加载器也装上；
+//   只加载油猴时 --disable-extensions-except 会把加载器排除掉，页面里就没有 window.NetClass。
+const EXT_NC = 'C:/Users/WJX/AppData/Roaming/OCS Desktop/downloads/extensions/netclass-loader';
 const PREF_ROOT = 'C:\\Users\\WJX\\AppData\\Roaming\\OCS Desktop\\userDataDirs';
 const WORK = 'C:\\Users\\WJX\\AppData\\Local\\TaskMesh\\netclass';
 
@@ -136,7 +139,7 @@ async function cmdUp({ profile, port = 9224, url = '', nopipe = false }) {
   const cli = [
     `"${CHROME}"`,
     `--user-data-dir="${profDir}"`,
-    nopipe ? '' : `--load-extension="${EXT_TM}" --disable-extensions-except="${EXT_TM}"`,
+    nopipe ? '' : `--load-extension="${EXT_TM},${EXT_NC}" --disable-extensions-except="${EXT_TM},${EXT_NC}"`,
     `--remote-debugging-port=${port}`,
     `--remote-allow-origins=*`,
     `--no-first-run`, `--no-default-browser-check`, `--lang=zh-CN`,
