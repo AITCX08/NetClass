@@ -76,11 +76,32 @@ const TARGETS = [
   { name: '学习通驱动', match: 'cx-auto\\.mjs --port', uniq: true, args: ['scripts/cx-auto.mjs', '--port', '9227', '--secs', '10', '--maxmins', '400'], out: 'runs/cx-driver.out.log', err: 'runs/cx-driver.err.log' },
 ];
 
+/** 重建某个端口的隧道（端口不通时调用） */
+function rebuildTunnel(port) {
+  if (DRY) { log('  (dry) 会重建 ' + port + ' 隧道'); return; }
+  try {
+    execFileSync('powershell.exe', ['-NoProfile', '-Command',
+      `Start-Process -FilePath 'pwsh' -ArgumentList '-NoProfile','-File','scripts/tunnel.ps1','-Port','${port}' -WorkingDirectory '${process.cwd()}' -WindowStyle Hidden`
+    ], { encoding: 'utf8', timeout: 30000 });
+    log('  🔧 已重建 ' + port + ' 隧道');
+  } catch (e) { log('  ✗ 重建 ' + port + ' 隧道失败: ' + String(e).slice(0, 70)); }
+}
+
 log('=== 系统级主管启动（每 ' + INTERVAL + 's 全量体检）===' + (DRY ? ' [dry]' : ''));
 
 for (;;) {
   const ports = [];
-  for (const p of [9224, 9227, 9228]) ports.push(p + (await portHasPage(p) ? '✅' : '❌'));
+  const down = [];
+  for (const p of [9224, 9227, 9228]) {
+    const ok = await portHasPage(p);
+    ports.push(p + (ok ? '✅' : '❌'));
+    if (!ok) down.push(p);
+  }
+  // ★ 端口不通 → 重建隧道（2026-10-15 实测：9224/9227 的隧道会自己断，
+  //   表现为"驱动还在跑、日志还在写，但两个平台完全停摆"——最隐蔽的失效模式）
+  for (const p of down) rebuildTunnel(p);
+  if (down.length) await new Promise(r => setTimeout(r, 20000));   // 给隧道 20 秒起来
+
   const issues = [];
 
   for (const t of TARGETS) {
@@ -89,6 +110,6 @@ for (;;) {
     else if (t.uniq && pids.length > 1) { log('  ⚠ ' + t.name + ' 有 ' + pids.length + ' 个实例（' + pids.join(',') + '），保留 1 个'); }
   }
 
-  log('CDP: ' + ports.join(' ') + '  |  ' + (issues.length ? '修复: ' + issues.join('、') : '全部在位'));
+  log('CDP: ' + ports.join(' ') + (down.length ? '（已尝试重建 ' + down.join(',') + '）' : '') + '  |  ' + (issues.length ? '修复: ' + issues.join('、') : '全部在位'));
   await new Promise(r => setTimeout(r, INTERVAL * 1000));
 }

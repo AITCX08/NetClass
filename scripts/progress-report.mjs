@@ -39,14 +39,19 @@ const CC_EXPR = `(async function(){
   try {
     var tk = localStorage.getItem('access_token'); var H = { 'Accept':'application/json', 'Authorization':'Bearer ' + tk };
     var t = await (await fetch('/api/v1/me/my-trainings-progress', { credentials:'include', headers:H })).text();
-    var m = t.match(/"learned_score":([0-9.]+).*?"completed_courses":(\\d+),"total_courses":(\\d+)/);
-    var v = document.querySelector('video');
+    // ★ 用 JSON.parse 而不是正则（旧版正则一不匹配就 throw → 整条快照变 null；实测长春那格连续 null 就是这个）
+    var o = null;
+    try { var arr = JSON.parse(t); o = (arr && arr[0]) || null; } catch(e) { o = null; }
+    function f(r){try{var v=r.querySelector&&r.querySelector('video');if(v)return v;var fs=r.querySelectorAll?r.querySelectorAll('iframe'):[];for(var i=0;i<fs.length;i++){var d=null;try{d=fs[i].contentDocument}catch(e){}if(d){var x=f(d);if(x)return x}}}catch(e){}return null}
+    var v = f(document);
     return JSON.stringify({
-      learned: m ? Number(m[1]) : null, done: m ? Number(m[2]) : null, total: m ? Number(m[3]) : null,
+      learned: o ? Number(o.learned_score) : null,
+      done: o ? Number(o.completed_courses) : null,
+      total: o ? Number(o.total_courses) : null,
       cur: v ? Math.round(v.currentTime) : null, dur: v ? Math.round(v.duration||0) : null,
       rate: v ? v.playbackRate : null, paused: v ? v.paused : null
     });
-  } catch(e) { return null; }
+  } catch(e) { return JSON.stringify({ err: String(e).slice(0,60) }); }
 })()`;
 
 const CX_EXPR = `(function(){
