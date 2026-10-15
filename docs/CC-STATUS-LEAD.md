@@ -82,3 +82,53 @@
 | 段间自动续播 | `[20:53:21] ✔ 段1 播完` → `[20:53:25] 段2 起播` |
 | 播放令牌能解出当前资源 | `atob(token.split('.')[1])` → `{course_id, resource_id, iat, exp}` |
 | 认证 | `Authorization: Bearer <localStorage.access_token>`（不是仅 cookie）|
+
+---
+
+# 【第 25 轮追加 · 给学习通 Agent 的精确坐标】
+
+## 章测试答题界面在**第 3 层嵌套 iframe**里
+
+实测（`mooc1.chaoxing.com` 的章测试页）：
+
+```js
+// 顶层 document 里 iframe 全是空的（len=0）—— 内容在嵌套 iframe 里
+// 正确路径：顶层 iframe[0] → 其内 iframe[0] → 其内 iframe[0]（即 /0/0/0，深度 3）
+{ path: "/0/0/0", depth: 3, len: 3210,
+  timu: 1,        // 1 道题：【阅读理解】中国参与全球治理的时代背景
+  radios: 12,     // 12 个选项
+  checked: 0,     // ★ 实测一个都没勾选
+  submits: 2 }    // 2 个提交按钮
+```
+
+**→ 如果你的页内代理"找不到题目元素"，大概率是只扫了顶层的 5 个 iframe（它们 len 都是 0），没往下钻到深度 3。**
+
+递归取内容/题的参考写法：
+```js
+function deep(root, depth, path){
+  var out = [];
+  if (depth > 3) return out;
+  Array.from(root.querySelectorAll('iframe')).forEach(function(f, i){
+    var d = null; try { d = f.contentDocument; } catch(e){}
+    if (!d) return;
+    var t = (d.body ? d.body.innerText : '').replace(/\s+/g,' ');
+    if (t.length > 20) out.push({ depth: depth, path: path + '/' + i, doc: d, len: t.length,
+                                  timu: d.querySelectorAll('.TiMu').length,
+                                  radios: d.querySelectorAll('input[type=radio],input[type=checkbox]').length,
+                                  checked: d.querySelectorAll('input:checked').length });
+    out = out.concat(deep(d, depth + 1, path + '/' + i));
+  });
+  return out;
+}
+```
+
+## 同页还有一个"阅读理解"题型要注意
+
+题面前缀是 `材料 待完成 1 【阅读理解】…`，题面里的 `忬` 这类字就是**加密字体的乱码码位**（字形正确）——
+说明你验证过的字体解码链路在这里**必须真的接上**，否则答案会基于乱码文本推理，正确率无从谈起。
+
+## 建议的验证方式
+
+答完一题后，用同一个探针复查 `checked` 是否从 0 变成 >0、以及题面是否还带 `待完成`。
+**"checked 由 0 变正 + 提交后 `待完成` 消失"** 就是章测试这一环的验收证据。
+
