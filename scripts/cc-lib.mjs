@@ -149,6 +149,26 @@ export async function acquireTab(port, opts = {}) {
   return await openNew();
 }
 
+/** 关掉自己没有 owner 的多余 ccjyxy 标签（只关无主的；绝不关别人的）。返回关掉的数量。 */
+export async function closeExtraTabs(port, token, tag, keepId) {
+  const cand = await listTabs(port);
+  if (!cand || cand.length <= 1) return 0;
+  let closed = 0;
+  for (const t of cand) {
+    if (t.id === keepId) continue;
+    const tab = new Tab(t, port);
+    if (!await tab.connect()) continue;
+    const o = await tab.ev(`(function(){ return document.documentElement.getAttribute(${JSON.stringify(token)}) })()`);
+    if (!o) {
+      try { await fetch(`http://127.0.0.1:${port}/json/close/${t.id}`); } catch (_) { }
+      closed++;
+    }
+    tab.close();
+  }
+  if (closed) console.log('[tabs] 关掉 ' + closed + ' 个无主 ccjyxy 标签（保留 ' + String(keepId).slice(0, 8) + '）');
+  return closed;
+}
+
 export class Tab {
   constructor(t, port) { this.targetId = t.id; this.port = port; this.url0 = t.url; this.ws = null; this.seq = 0; }
   async connect() {
@@ -289,21 +309,27 @@ export const HUNTER_JS = `(function(){
     var v = f(document); if (!v) return;
     try { v.muted = true; } catch(e){}
     try {
-      var R = parseFloat(localStorage.getItem('ncCc:rate') || '2');
-      // ★ 倍速锁突破（学习通同款招法）：站点在 ratechange 后会把 playbackRate 写回 1x。
-      //   把实例上的该属性定义成"恒返回目标值"的 getter → 站点的写回被接管、失效；
-      //   真正的底层倍速由原生 setter 压上去。实测长春从锁死的 1x → 实速 2.05x（总时长直接砍半）
+      // ★ 倍速锁（修复版）：两个坑都踩过 → ① R 不能在建锁时捕获进闭包（之后改 rate 不生效）
+      //   ② setter 不能"有条件忽略"，否则平台用原生 setter 写 1x 时照样生效。
+      //   现在：getter **每次实时读** localStorage；setter **一律忽略**外部写入；
+      //   真实倍速由我们每 tick 用**原生 setter** 压上去（绕过实例上的访问器）。
+      var getR = function(){ try { return parseFloat(localStorage.getItem('ncCc:rate') || '2'); } catch(e){ return 2; } };
+      var R = getR();
       if (!v.__ccRateLock) {
         Object.defineProperty(v, 'playbackRate', {
           configurable: true,
-          get: function(){ return R; },
-          set: function(x){ if (Math.abs(x - R) < 0.01) { try { Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'playbackRate').set.call(v, x); } catch(e){} } }
+          get: function(){ return getR(); },
+          set: function(_x){ /* 平台想写回 1x：一律忽略 */ }
         });
         v.__ccRateLock = 1;
       }
-      try { Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'playbackRate').set.call(v, R); } catch(e){}
+      // 每 tick 用原生 setter 把真实倍速压上去（这是绕过实例访问器的唯一通道）
+      if (v.__ccNativeSet === undefined) { try { v.__ccNativeSet = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'playbackRate').set; } catch(e){ v.__ccNativeSet = null; } }
+      if (v.__ccNativeSet) { try { v.__ccNativeSet.call(v, R); } catch(e){} }
     } catch(e){}
-    if (v.paused) { try { v.play().catch(function(){}); } catch(e){} }
+    // ★★ 千万不要对【已播完】的视频调 play()：那会让它从头重播 → 制造无限循环，
+    //    驱动等不到 "cur >= dur-2" 的判定 → 永远卡在同一段（实测踩过：resource 1408 已完成却一直循环）
+    if (v.paused && !v.ended) { try { v.play().catch(function(){}); } catch(e){} }
     if (!v.__ccHooked) {
       v.__ccHooked = 1;
       v.addEventListener('playing', function(){ window.__ccLog.push('playing@' + Math.round(v.currentTime)); });
@@ -518,26 +544,35 @@ export async function pendingSegments(tab) {
   })()`);
 }
 
-/** 关掉页面内的 NetClass 用户脚本 —— 实测它会在播放器页反复「按停播放」，
- *  导致 <video> 被 pause()、startSegment 的 play() 被中断（错误：play() request was interrupted by a call to pause()）。
- *  纯视频任务不需要它（它也没有 ccjyxy 适配器）。 */
+/** 关掉页面内 NetClass 用户脚本里**会捣乱的两块**，但保留倍速能力。
+ *  实测教训（2026-10-15 20:00）：
+ *    · autoNext=true 时它没有 ccjyxy 适配器 → 盲点站点「下一节」→ SPA 在 训练页/课程页 ping-pong
+ *    · 直接 dispose() 整个脚本 → 倍速纠正一起没了（rateFixes 计数停在 0）
+ *  正确姿势：脚本 enabled=true、autoNext=false、rate 由驱动器/站点给（实测 2x 能稳住，实速 1.87x） */
 export async function killUserscript(tab) {
   return await tab.ev(`(function(){
-    var r = { disposed: 0, panel: 0 };
-    try { if (window.NetClass && window.NetClass.dispose) { window.NetClass.dispose(); r.disposed = 1; } } catch (e) { }
+    var r = { fixed: 0 };
     try {
       if (window.NetClass && window.NetClass.cfg) {
-        window.NetClass.cfg.enabled = false; window.NetClass.cfg.autoPlay = false;
-        window.NetClass.cfg.antiPause = false; window.NetClass.cfg.autoNext = false;
+        var c = window.NetClass.cfg;
+        c.enabled = true;          // 保留：倍速纠正 / 起播
+        c.autoNext = false;        // 关掉：盲点「下一节」把 SPA 踢飞
+        c.autoQuiz = false;
+        c.antiPause = false;
+        c.autoPlay = true;
+        r.fixed = 1;
       }
       var KEY = 'netclass.cfg.v3';
       var cfg = {}; try { cfg = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { cfg = {}; }
-      cfg.enabled = false; cfg.autoPlay = false; cfg.autoNext = false; cfg.autoQuiz = false; cfg.antiPause = false;
+      cfg.enabled = true;
+      cfg.autoNext = false;
+      cfg.autoQuiz = false;
+      cfg.antiPause = false;
+      cfg.autoPlay = true;
       localStorage.setItem(KEY, JSON.stringify(cfg));
       localStorage.setItem('ncCc:paused', '0');
     } catch (e) { }
-    var p = document.getElementById('netclass-panel'); if (p) { p.remove(); r.panel = 1; }
-    var b = document.getElementById('netclass-banner'); if (b) b.remove();
+    // 不再删面板：面板是 ops 视角，留着
     return JSON.stringify(r);
   })()`);
 }

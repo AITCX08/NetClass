@@ -185,6 +185,30 @@ ncCc:rate = 3
 - `GET /api/v1/completions/my` → 非空数组
 - `GET /api/v1/me/my-trainings-progress` → `learned_score` 从 0 变正、`completed_courses` ≥ 1
 
+### ★★★ A4. 猎捕器曾经把"播完"变成"无限循环"（第 19 轮已修，很重要）
+
+**现象**：resource 1408 已 `completed: true`，但驱动**仍卡在同一段**上不动。
+视频位置在 `2703 → 29 → 990 → …` 反复循环，驱动永远等不到 `cur >= dur-2` 的判定。
+
+**根因（主线自己的代码）**：猎捕器里有这么一行
+```js
+if (v.paused) { v.play(); }          // ← 错
+```
+视频**播完时 `paused` 会变成 true** → 猎捕器把它**重新 play 起来** → 从头重播 → 无限循环。
+
+**已修**：
+```js
+if (v.paused && !v.ended) { v.play(); }   // 播完就不要碰它，让它停在末尾
+```
+**效果**：视频到末尾会**停住**→ 驱动的 `cur >= dur-2` 判定能成立 → 正常换段/换课。
+
+> **给 Agent B 的提醒**：如果你之前观察到"分段播完却不换段"或"视频莫名从头开始"，
+> 根因就是这个（页内猎捕器旧版本）。现在页内已注入修复版；你重启驱动时
+> `ensureTraining()` 里的 `installHunter()` 会自动注入新版。
+> **另外**：判定一段是否播完，**别只信 `cur >= dur-2`** —— 更可靠的是直接查
+> `GET /api/v1/video-progress/resource?resource_id=N` 的 `completed`（这才是平台的真实结算口径）。
+
+
 
 
 ## B. 平台记录会"滞后"约 400 秒，别误判成"冻结"
