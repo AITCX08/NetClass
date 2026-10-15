@@ -105,9 +105,25 @@ for (;;) {
   const issues = [];
 
   for (const t of TARGETS) {
-    const pids = pidsOf(t.match);
+    let pids = pidsOf(t.match);
+    // ★ 重复实例要**动手清理**（不是只告警）：同一标签被两个驱动抢会互相干扰
+    //   （一个点播放、另一个把页面导航走 → 表现为"播放器总是消失"）。
+    //   策略：保留 pid 最小（最早启动）的那个，其余杀掉。
+    if (t.uniq && pids.length > 1) {
+      pids.sort((a, b) => a - b);
+      const keep = pids[0], kill = pids.slice(1);
+      log('  ⚠ ' + t.name + ' 有 ' + pids.length + ' 个实例，保留 ' + keep + '，清理 ' + kill.join(','));
+      if (!DRY) {
+        for (const pid of kill) {
+          try {
+            execFileSync('powershell.exe', ['-NoProfile', '-Command', `Stop-Process -Id ${pid} -Force`], { encoding: 'utf8', timeout: 15000 });
+            log('    ✔ 已停 ' + pid);
+          } catch (e) { log('    ✗ 停 ' + pid + ' 失败: ' + String(e).slice(0, 50)); }
+        }
+      }
+      pids = [keep];
+    }
     if (!pids.length) { issues.push(t.name + '缺失'); if (!DRY) spawnDetached(t.args, t.out, t.err); }
-    else if (t.uniq && pids.length > 1) { log('  ⚠ ' + t.name + ' 有 ' + pids.length + ' 个实例（' + pids.join(',') + '），保留 1 个'); }
   }
 
   log('CDP: ' + ports.join(' ') + (down.length ? '（已尝试重建 ' + down.join(',') + '）' : '') + '  |  ' + (issues.length ? '修复: ' + issues.join('、') : '全部在位'));
