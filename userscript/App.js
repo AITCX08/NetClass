@@ -1751,7 +1751,14 @@
     log('实现模块启动', { version: VERSION, platform: PLATFORM, host: HOST });
     hookFetch(); hookXhr();
     videoWatch();
-    timers.push(setInterval(() => { state.loopTicks++; P_ADAPTER && P_ADAPTER.poll().catch(err); }, 3000));
+    timers.push(setInterval(() => {
+      state.loopTicks++;
+      P_ADAPTER && P_ADAPTER.poll().catch(err);
+      // ★ 面板兜底挂载（2026-10-15 补）：实测 start() 里那一次 mountPanel() 会因"加载期模块服务
+      //   瞬时不可用 → 走内联兜底 boot"而没执行，表现为**面板整块不出现**（页面里 7 个 frame 都没有）。
+      //   放到主循环里每次探一下，cost 极低，且能覆盖 body 未就绪 / 路由切换等所有时机问题。
+      if (CFG.panel && !panelEl) { try { mountPanel(); } catch (e) { warn('面板挂载失败', e); } }
+    }, 3000));
     timers.push(setInterval(() => {
       if (location.href !== state.route) { state.route = location.href; log('路由变化', state.route); timers.push(setTimeout(() => applyPolicy(pickVideo(), 'route'), 1500)); }
     }, 1500));
