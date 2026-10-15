@@ -38,14 +38,17 @@ const log = (m) => {
  *  ⚠️ 必须排除**作业运行器**（@deepseek-ai/dsh-subprocess-local/runner.js）：
  *     它的命令行里包含"我这条启动命令的全文"，会把所有脚本名都匹配上 → 严重误报
  *     （实测：同一 pid 同时出现在 ss看门狗/提交看门狗/进度记录 三个清单里）
- */
+ *  ★★ 出错时返回 **null**（不是 []）！这是关键：
+ *     实测事故 —— 计划任务上下文里 powershell.exe 枚举超时 → 返回 [] → 主管以为"进程缺失"
+ *     → 每分钟启动一个新副本 → 一小时内复制出 4 份驱动/看门狗，两个驱动抢同一标签。
+ *     返回 null 后调用方会**跳过本轮**（fail-closed），宁可不动也不能复制。 */
 function pidsOf(match) {
   try {
     const out = execFileSync('powershell.exe', ['-NoProfile', '-Command',
       `Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match '${match}' -and $_.CommandLine -notmatch 'runner\\.js' -and $_.CommandLine -notmatch 'subprocess-local' } | ForEach-Object { $_.ProcessId }`
-    ], { encoding: 'utf8', timeout: 25000 });
+    ], { encoding: 'utf8', timeout: 60000 });
     return out.split(/\r?\n/).map(s => s.trim()).filter(Boolean).map(Number).filter(n => n > 0);
-  } catch (_) { return []; }
+  } catch (_) { return null; }        // ← null = "我没查出来"，不是"没有"
 }
 
 function spawnDetached(args, outLog, errLog) {
@@ -94,6 +97,22 @@ function rebuildTunnel(port) {
   } catch (e) { log('  ✗ 重建 ' + port + ' 隧道失败: ' + String(e).slice(0, 70)); }
 }
 
+// ★★ 自锁：同一时间只允许一个主管（第二道保险）
+//   第一道是 pidsOf 的 fail-closed；但若两个主管被判"同时启动"（计划任务 + 手动），
+//   它们可能互相看不见对方 → 双份复制。用 PID 文件互斥，确定性更强。
+const LOCK_FILE = 'runs/supervisor.lock';
+try {
+  const { readFileSync, writeFileSync } = await import('node:fs');
+  let oldPid = 0;
+  try { oldPid = Number(String(readFileSync(LOCK_FILE, 'utf8')).trim()) || 0; } catch (_) { }
+  if (oldPid && oldPid !== process.pid) {
+    let alive = false;
+    try { process.kill(oldPid, 0); alive = true; } catch (_) { alive = false; }   // 0 号信号只探活
+    if (alive) { console.log('[supervisor] 已有实例在跑 pid=' + oldPid + ' → 本实例退出（自锁）'); process.exit(0); }
+  }
+  writeFileSync(LOCK_FILE, String(process.pid));
+} catch (e) { console.log('[supervisor] 自锁建立失败（继续跑）: ' + String(e).slice(0, 60)); }
+
 log('=== 系统级主管启动（每 ' + INTERVAL + 's 全量体检）===' + (DRY ? ' [dry]' : ''));
 
 for (;;) {
@@ -113,6 +132,8 @@ for (;;) {
 
   for (const t of TARGETS) {
     let pids = pidsOf(t.match);
+    // ★★ fail-closed：枚举失败就**跳过本轮**，绝不能当成"缺失"去启动（那会复制失控）
+    if (pids === null) { log('  ⚠ ' + t.name + ' 进程枚举失败 → 本轮跳过（不启动，避免复制）'); continue; }
     // ★ 重复实例要**动手清理**（不是只告警）：同一标签被两个驱动抢会互相干扰
     //   （一个点播放、另一个把页面导航走 → 表现为"播放器总是消失"）。
     //   策略：保留 pid 最小（最早启动）的那个，其余杀掉。
@@ -123,7 +144,7 @@ for (;;) {
       if (!DRY) {
         for (const pid of kill) {
           try {
-            execFileSync('powershell.exe', ['-NoProfile', '-Command', `Stop-Process -Id ${pid} -Force`], { encoding: 'utf8', timeout: 15000 });
+            execFileSync('powershell.exe', ['-NoProfile', '-Command', `Stop-Process -Id ${pid} -Force`], { encoding: 'utf8', timeout: 20000 });
             log('    ✔ 已停 ' + pid);
           } catch (e) { log('    ✗ 停 ' + pid + ' 失败: ' + String(e).slice(0, 50)); }
         }
