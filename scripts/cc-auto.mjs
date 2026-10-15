@@ -15,7 +15,7 @@
  *   4. 播放器页 = 有「返回课程列表」+ <video>；课程详情页 = 有「返回培训内容列表」
  *   5. 培训页只渲染展开分类里的课程卡（懒加载）；课程名最长 40+ 字，别按长度过滤
  */
-import { Tab, listCcTabs, acquireTab, closeExtraTabs, pageState, ensureTraining, expand, enumerate, openCourse, backToTraining, playFirstSegment, killUserscript, claimCourse, releaseCourse, myClaims, claimsSnapshot, touchClaims, sleep, CATNAMES } from './cc-lib.mjs';
+import { Tab, listCcTabs, acquireTab, closeExtraTabs, ensureViewport, pageState, ensureTraining, expand, enumerate, openCourse, backToTraining, playFirstSegment, killUserscript, claimCourse, releaseCourse, myClaims, claimsSnapshot, touchClaims, sleep, CATNAMES } from './cc-lib.mjs';
 import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 const A = {};
@@ -49,6 +49,8 @@ async function pickTab() {
   tab = await acquireTab(PORT, { token: TOKEN, targetId: TARGETID, index: TAB, tag: TAG });
   if (!tab) return null;
   TARGETID = tab.targetId;
+  // 视口保活（多次开关标签后窗口会被压小 → 所有点击落空）
+  if (await ensureViewport(tab)) log('  视口已恢复到 1200x1000');
   // 自检：确认这个标签确实是自己的（防止两个实例共用一个标签互相打断）
   const o = await tab.ev(`(function(){ return document.documentElement.getAttribute(${JSON.stringify(TOKEN)}) })()`);
   if (o !== TAG) { log('⚠ 标签归属异常（owner=' + o + '，期望 ' + TAG + '）'); }
@@ -143,7 +145,22 @@ if (!tab) { log('❌ 没有 ccjyxy 标签（也开不出来）'); process.exit(1
 log('tab=' + tab.targetId.slice(0, 8) + ' tag=' + TAG);
 
 let mode = 'HOME';        // HOME | PLAY | COURSE | PICK
-let skip = new Set();     // 本轮跳过的课程（打不开/播不动）
+// ★★ 持久化跳过表（2026-10-16 主线补）——旧写法是内存 Set 且每轮 `skip.clear()`，
+//   于是"**能打开但播不动**"的课会被无限重试：实测「观察与猜想」陷入
+//   `起播→10秒播放器关闭→回列表→再进同一门→再播10秒` 的死循环，学时零增长。
+//   `skip.add` 也只在"打不开"时调用，**"播不动"根本没人管**。
+//   现在：跳过表落盘 runs/cc-skip.json（跨轮/跨进程有效），并在成功完成后自动移除。
+const SKIP_FILE = 'runs/cc-skip.json';   // 驱动的工作目录就是仓库根
+let skip = new Set();
+try {
+  const j = JSON.parse(readFileSync(SKIP_FILE, 'utf8'));
+  if (Array.isArray(j)) { j.forEach(n => skip.add(n)); if (skip.size) log('  跳过表（持久化）: ' + skip.size + ' 门 → ' + [...skip].map(s => s.slice(0, 16)).join(' / ')); }
+} catch (_) { }
+const saveSkip = () => { try { writeFileSync(SKIP_FILE, JSON.stringify([...skip], null, 1)); } catch (_) { } };
+/** 把某门课加入跳过表（打不开 / 播不动 都走这里） */
+const addSkip = (name, why) => { if (name && !skip.has(name)) { skip.add(name); saveSkip(); log('  ⏭ 加入跳过表: ' + String(name).slice(0, 22) + '（' + why + '）'); } };
+const delSkip = (name) => { if (name && skip.has(name)) { skip.delete(name); saveSkip(); } };
+let fastClose = {};        // 课程名 → 连续"播放器秒关"次数
 let handled = 0, segTotal = 0, sinceEnum = 0;
 let courses = [];
 let current = null;       // 当前认领的课程 {name,cat}
@@ -264,7 +281,7 @@ for (let tick = 1; tick <= 100000; tick++) {
         current = { name: target.name, cat: target.cat };
         saveRun({ tag: TAG, target: target.name, cat: target.cat, mode, at: Date.now(), segTotal });
       } else {
-        skip.add(target.name); releaseCourse(target.name, TAG);
+        addSkip(target.name, '打不开'); releaseCourse(target.name, TAG);
         log('  ✗ 打不开，释放并跳过');
       }
       await sleep(2500);
