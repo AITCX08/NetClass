@@ -242,11 +242,19 @@ for (let i = 0; i < data.questions.length && i < LIMIT; i++) {
       var li = lis[k];
       if (!li) { res.push({ k: k, err: 'no-li' }); return; }
       var inp = li.querySelector('input[type=radio], input[type=checkbox]');
+      var a = li.querySelector('a');                 // ★ 选项里的 <a>（实测：点它才有效）
+      var lab = li.querySelector('label');
       var already = inp ? inp.checked : li.className.indexOf('check_answer') >= 0;
-      if (!already) { try { li.click(); } catch(e){} }
-      if (inp && !inp.checked) { try { inp.click(); } catch(e){} }
-      if (inp && !inp.checked) { inp.checked = true; ['input','change','click'].forEach(function(t){ try { inp.dispatchEvent(new Event(t, { bubbles: true })); } catch(e){} }); }
-      if (typeof doc.defaultView.addcheck === 'function') { try { doc.defaultView.addcheck(Number(qid)); } catch(e){} }
+      // ★★ 点击顺序（2026-10-15 实测校准）：**先点 input**，再点 a，最后才点 li。
+      //   旧代码先 li.click() —— 对学习通真实的答题页**无效**（选项 li 上没有 click 处理，
+      //   真正接住事件的是里面的 label/input 和 a 元素）。这就是"答案没被记录 → 全 0 分"的根因。
+      //   ⚠️ 本段在模板字面量里，注释中禁用反引号（这个坑我自己踩过三次）
+      if (inp && !inp.checked) { try { inp.click(); } catch (e) { } }          // ① 首选
+      if (inp && !inp.checked && lab) { try { lab.click(); } catch (e) { } }   // ② label
+      if (inp && !inp.checked && a) { try { a.click(); } catch (e) { } }       // ③ 选项里的 a
+      if (!already) { try { li.click(); } catch (e) { } }                      // ④ 兜底
+      if (inp && !inp.checked) { inp.checked = true; ['input', 'change', 'click'].forEach(function (t) { try { inp.dispatchEvent(new Event(t, { bubbles: true })); } catch (e) { } }); }
+      if (typeof doc.defaultView.addcheck === 'function') { try { doc.defaultView.addcheck(Number(qid)); } catch (e) { } }
       var checkedNow = inp ? inp.checked : li.className.indexOf('check_answer') >= 0;
       res.push({ k: k, checked: checkedNow, val: inp ? inp.value : null });
     });
