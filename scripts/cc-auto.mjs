@@ -268,7 +268,7 @@ for (let tick = 1; tick <= 100000; tick++) {
         const snap = claimsSnapshot();
         const others = Object.keys(snap).filter(k => snap[k].tag && snap[k].tag !== TAG).length;
         const doneN = Object.keys(snap).filter(k => snap[k].done).length;
-        if (skip.size) { log('  本轮全部跳过（' + skip.size + ' 门），清空跳过表'); skip.clear(); }
+        if (skip.size) { log('  本轮全部跳过（' + skip.size + ' 门）—— 持久化跳过表保留，不清空'); }
         log(`  没有可认领的课（未完成 ${undone.length} 门；别的实例占 ${others} 门；已完成标记 ${doneN}）→ 重新枚举`);
         sinceEnum = 0; await sleep(8000); continue;
       }
