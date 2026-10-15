@@ -386,22 +386,37 @@ export async function enforceSingleTab(tab, log = () => { }) {
   } catch (_) { return 0; }
 }
 
-/** 保证在培训页（学习总进度）。返回 true/false */
+/** 保证在培训页（学习总进度）。返回 true/false。
+ *  ★ 实测坑：停在「我的培训」页时，有时「进入」按钮被一个空 DIV 盖住（elementFromPoint 返回 DIV，不是 button）
+ *    → 点十几次都进不去。可靠兜底 = **整页导航回首页**（SPA 重载后 svc 会直接落到培训页）。 */
 export async function ensureTraining(tab, log = () => { }) {
-  await enforceSingleTab(tab, log);        // ★ 每轮先收敛到单标签（多标签会 423 锁死）
-  await installHunter(tab);                // ★ 确保猎捕器在位（倍速锁 + 起播都靠它）
-  for (let i = 0; i < 8; i++) {
+  let enterTries = 0;
+  for (let i = 0; i < 10; i++) {
     let s = await pageState(tab);
     if (s && s.onTrain) return true;
     if (!s) { await sleep(4000); continue; }
     if (s.onPlayer) { log('  播放器页 → 点「返回课程列表」'); await tab.clickText('返回课程列表'); await sleep(5000); continue; }
     if (s.onCourse) { log('  课程详情页 → 点「返回培训内容列表」'); await tab.clickText('返回培训内容列表'); await sleep(5000); continue; }
-    if (s.onMyTraining) { log('  我的培训页 → 点「进入」'); await tab.clickText('进入'); await sleep(6000); continue; }
-    log('  未知页态 → 刷新页面'); await tab.reload(); await sleep(9000);
+    if (s.onMyTraining) {
+      enterTries++;
+      log('  我的培训页 → 点「进入」（第 ' + enterTries + ' 次）');
+      await tab.clickText('进入');
+      await sleep(6000);
+      if (enterTries >= 3) {
+        log('  「进入」点不动 → 整页导航回首页重进');
+        await tab.navigate(HOME); await sleep(13000);
+        let s2 = await pageState(tab);
+        if (s2 && s2.onTrain) return true;
+        if (s2 && s2.onMyTraining) { await tab.clickText('进入'); await sleep(7000); s2 = await pageState(tab); }
+        if (s2 && s2.onTrain) return true;
+        enterTries = 0;
+      }
+      continue;
+    }
+    log('  未知页态 → 导航首页'); await tab.navigate(HOME); await sleep(12000);
   }
-  // 最后兜底：直接导航首页 + 进入培训
   log('  兜底：导航首页');
-  await tab.navigate(HOME); await sleep(9000);
+  await tab.navigate(HOME); await sleep(12000);
   let s = await pageState(tab);
   if (s && s.onMyTraining) { await tab.clickText('进入'); await sleep(7000); s = await pageState(tab); }
   return !!(s && s.onTrain);
@@ -607,14 +622,14 @@ export { CATNAMES, HOME, sleep, listTabs as listCcTabs };
 
 /** 从当前页回退到培训页（播放器→课程列表→课程→培训内容列表→培训页） */
 export async function backToTraining(tab, log = () => { }) {
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 6; i++) {
     const s = await pageState(tab);
     if (!s) { await sleep(4000); continue; }
     if (s.onTrain) return true;
     if (s.onPlayer) { log('    回退：播放器页 → 返回课程列表'); await tab.clickText('返回课程列表'); await sleep(5000); continue; }
     if (s.onCourse) { log('    回退：课程详情 → 返回培训内容列表'); await tab.clickText('返回培训内容列表'); await sleep(6000); continue; }
-    if (s.onMyTraining) { log('    回退：我的培训 → 进入'); await tab.clickText('进入'); await sleep(6000); continue; }
-    log('    回退：未知页态 → 刷新'); await tab.reload(); await sleep(10000);
+    break;
   }
-  return !!(await pageState(tab))?.onTrain;
+  // 靠点击回不去就交给 ensureTraining（它会用整页导航兜底）
+  return await ensureTraining(tab, log);
 }
