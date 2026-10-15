@@ -17,7 +17,8 @@ const MATCHES = [
   'https://study.bjqiyang.com/*',
   'https://tea.webtrn.cn/*',      // 教师培训：研修活动/作业
   'https://*.chaoxing.com/*',     // 学习通（超星）：课程/章节/任务点
-  'https://*.ccjyxy.cn/*'         // 新订单：col.ccjyxy.cn
+  'https://*.ccjyxy.cn/*',      // 新订单：col.ccjyxy.cn
+  'https://*.zhihuishu.com/*'   // 智慧树（知到）：学习页 studyvideoh5.zhihuishu.com/stuStudy
 ];
 const CODE_URL = 'http://127.0.0.1:17800/netclass.user.js';
 

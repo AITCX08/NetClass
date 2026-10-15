@@ -19,8 +19,9 @@
     : /bjqiyang/i.test(HOST) ? 'qiyang'
       : /webtrn\.cn/i.test(HOST) ? 'webtrn'
         : /chaoxing\.com/i.test(HOST) ? 'chaoxing'
-          : /ccjyxy\.cn/i.test(HOST) ? 'ccjyxy' : 'unknown';
-  const PLATFORM_LABEL = { shengsheng: '心理学导论', qiyang: '职业培训', webtrn: '教师培训', chaoxing: '学习通', ccjyxy: '长春教师培训', unknown: '未知平台' }[PLATFORM];
+          : /ccjyxy\.cn/i.test(HOST) ? 'ccjyxy'
+            : /zhihuishu\.com/i.test(HOST) ? 'zhihuishu' : 'unknown';
+  const PLATFORM_LABEL = { shengsheng: '心理学导论', qiyang: '职业培训', webtrn: '教师培训', chaoxing: '学习通', ccjyxy: '长春教师培训', zhihuishu: '智慧树知到', unknown: '未知平台' }[PLATFORM];
   const log = (...a) => console.log(NS, ...a);
   const warn = (...a) => console.warn(NS, ...a);
   const now = () => Date.now();
@@ -132,6 +133,43 @@
     } catch (_) { }
   }
 
+  /**
+   * ★★ 智慧树反检测（2026-10-15 实测定位，证据在 references/platforms.md 的 zhihuishu 章节）：
+   *   站点 stuStudy.js 会跑
+   *     isNative(window.XMLHttpRequest) && isNative(XMLHttpRequest.prototype.open)
+   *       && !window.OCS && isNative(Element.prototype.addEventListener)      ← 任一不满足 →
+   *   弹「检测到异常脚本…请您关闭插件」+ 3 秒后 window.location 跳回 www.zhihuishu.com；
+   *   另有元素级监听器拿 `!e.isTrusted` 判"合成事件"。
+   *   实测：注入本模块 → ~1 秒即被判；把模块 dispose 掉（撤钩子/面板）→ 连续 8 秒无检测。
+   *   所以 zhihuishu 走**最小侵入**：只包 `XMLHttpRequest.prototype.send`（站点的检查只看 `.open`），
+   *   不碰 `.open`/`.setRequestHeader`/`Element.prototype.addEventListener`，也不做 toString 伪装。
+   *   数据来源仍然够用：在 send 的 load 里用 `this.responseURL` 认接口（open 没被包，URL 从回包里取）。
+   */
+  const ZHS_MINIMAL = PLATFORM === 'zhihuishu';
+
+  // ------------------------------------------------------------ 反检测：把包装函数伪装成原生
+  /**
+   * 智慧树那条 isNative 检查里**包含 `XMLHttpRequest.prototype.open`**（解码自 bundle：0x38a/0x379/0x3a6）。
+   * 包装过的函数 `Function.prototype.toString` 会露馅，所以在站点脚本之前用代理兜一层。
+   * ⚠️ 只在"确实包了 .open"的非最小模式里启用；zhihuishu 走 ZHS_MINIMAL 时不启用（少一个可疑点）。
+   */
+  const NC_NATIVE_STR = new WeakMap();
+  const NC_TO_STRING = Function.prototype.toString;
+  function maskNative(fn, original) {
+    try { if (fn && original) NC_NATIVE_STR.set(fn, NC_TO_STRING.call(original)); } catch (_) { }
+    return fn;
+  }
+  if (!ZHS_MINIMAL) {
+    try {
+      const proxy = function toString() {
+        try { if (NC_NATIVE_STR.has(this)) return NC_NATIVE_STR.get(this); } catch (_) { }
+        return NC_TO_STRING.call(this);
+      };
+      try { NC_NATIVE_STR.set(proxy, NC_TO_STRING.call(NC_TO_STRING)); } catch (_) { }
+      Function.prototype.toString = proxy;
+    } catch (_) { }
+  }
+
   function hookFetch() {
     const of = window.fetch;
     if (!of || of.__ncHooked) return;
@@ -165,6 +203,7 @@
       return p;
     };
     hooked.__ncHooked = true;
+    maskNative(hooked, of);                 // 反检测：包装后的 fetch 也要"看起来是原生"
     window.fetch = hooked;
     cleanups.push(() => { if (window.fetch === hooked) window.fetch = of; });
   }
@@ -172,8 +211,8 @@
     const OX = window.XMLHttpRequest;
     if (!OX || OX.prototype.__ncHooked) return;
     const open = OX.prototype.open, send = OX.prototype.send, setH = OX.prototype.setRequestHeader;
-    OX.prototype.open = function (m, u) { this.__ncUrl = u; this.__ncHeaders = {}; return open.apply(this, arguments); };
-    OX.prototype.setRequestHeader = function (k, v) {
+    if (!ZHS_MINIMAL) OX.prototype.open = function (m, u) { this.__ncUrl = u; this.__ncHeaders = {}; return open.apply(this, arguments); };
+    if (!ZHS_MINIMAL) OX.prototype.setRequestHeader = function (k, v) {
       try { this.__ncHeaders = this.__ncHeaders || {}; this.__ncHeaders[k] = String(v); } catch (_) { }
       return setH.apply(this, arguments);
     };
@@ -181,7 +220,8 @@
       try { if (this.__ncUrl && this.__ncHeaders && Object.keys(this.__ncHeaders).length) recordHeaders(this.__ncUrl, this.__ncHeaders); } catch (_) { }
       this.addEventListener('load', () => {
         try {
-          const u = this.__ncUrl || '';
+          // 最小模式没包 open：URL 从回包里拿（responseURL 就是最终请求地址）
+          const u = this.__ncUrl || this.responseURL || '';
           const ct = (this.getResponseHeader && this.getResponseHeader('content-type')) || '';
           if (!/json/i.test(ct) || !u) return;
           const b = JSON.parse(this.responseText);
@@ -194,6 +234,12 @@
       return send.apply(this, arguments);
     };
     OX.prototype.__ncHooked = true;
+    // 非最小模式：open/setRequestHeader 也被包了 → 登记成"原生"（zhihuishu 走 ZHS_MINIMAL，不包这两个）
+    if (!ZHS_MINIMAL) {
+      maskNative(OX.prototype.open, open);
+      maskNative(OX.prototype.setRequestHeader, setH);
+      maskNative(OX.prototype.send, send);
+    }
     cleanups.push(() => {
       try { OX.prototype.open = open; OX.prototype.send = send; OX.prototype.setRequestHeader = setH; delete OX.prototype.__ncHooked; } catch (_) { }
     });
@@ -1471,11 +1517,125 @@
     progressInfo() { return this._p; },
   };
 
+  // ------------------------------------------------------------ 智慧树 / 知到
+  /**
+   * 智慧树（知到）—— 2026-10-15 接入。
+   * 站点事实：
+   *   · 学习页 `https://studyvideoh5.zhihuishu.com/stuStudy?recruitAndCourseId=<hex>`（video.js + mp4 直链 wsvideo.zhihuishu.com）
+   *   · **入口必须走"我的学堂"**（新版学堂在 hike-teaching-center.polymas.com 点课程卡片新开标签）；
+   *     直接刷新/直达 stuStudy 会落到 404 并跳回 www.zhihuishu.com（实测多次），要重走学堂入口。
+   *   · 目录在右侧：`li.clearfix.video`（视频小节） / `li.clearfix`（节/section 行） / `li.clearfix.font_gray_inclined.chapter`（章）
+   *   · 倍速**只有站点自己的三档**：`.speedBox` 悬停展开 `.speedList [rate="1.5"|"1.25"|"1.0"]`；
+   *     不要直接改 `video.playbackRate`（站点只提供这三档，外部改属性是异常信号）。
+   *
+   * ★★ 完成判据（唯一可靠的那个，2026-10-15 实测）：
+   *   **页面上没有可数的完成标记**，进度只能取站点接口：
+   *     · `.time_icofinish`（蓝底白勾）/`.time_ico_half`（灰底播放）/`.Sectionmark-em`（灰杠）
+   *       在 **全部 73 个小节上完全一致**（同一张 png、同 display/visibility/opacity、同 data-v 作用域），
+   *       所以"数目录里的勾"会永远得到 73/73 —— 这点与学习通的 `span.roundpoint blue/orange01` 完全不同。
+   *     · 唯一可靠来源是接口（由 App.js 已有的 XHR 钩子旁路拿到，**不需要自己签 secretStr**）：
+   *         POST studyservice-api.zhihuishu.com/gateway/t/v1/learning/videolist       → 树：章/videoLessons[]/videoSmallLessons[] + videoSec
+   *         POST studyservice-api.zhihuishu.com/gateway/t/v1/learning/queryStuyInfo   → { lesson:{lessonId:{watchState,studyTotalTime}}, lv:{smallLessonId:{...}} }
+   *         `watchState === 1` = 该视频**已看完**（studyTotalTime 已到 videoSec）；`0` = 没看完。
+   *     · 统计口径（与目录行数一致）：有 `videoSmallLessons` 的节用小节（查 `lv` 表），否则用节本身（查 `lesson` 表）；
+   *       24 门课里本门"大学生安全教育" = 35 节 + 38 小节 = **73 个视频单元**（与 DOM 的 73 行 li.clearfix.video 对得上）。
+   *   ⚠️ 别用 `videolist` 里的 `isStudiedLesson`：实测已看完的课它也是 0（导论 id=1000110424 就是 0/看完了）。
+   */
+  const ADAPTER_ZHIHUISHU = {
+    id: 'zhihuishu',
+    _tree: null,     // videolist → videoChapterDtos
+    _state: null,    // queryStuyInfo → { lesson, lv }
+    _p: null,        // 缓存进度 {total,done,pct,remainSec,etaSec,rate}
+    pageKind() {
+      const h = location.hostname;
+      if (/^login\./i.test(h) || /passport\./i.test(h)) return 'login';
+      if (/studyvideoh5/i.test(h)) return /stuStudy/i.test(location.pathname) ? 'study' : 'study-other';
+      if (/onlineweb|studyservice|studyh5/i.test(h)) return 'home';
+      return 'other';
+    },
+    /** 目录行（DOM）：{num, title, kind}；kind: chapter | section | video */
+    catalogRows() {
+      return Array.from(document.querySelectorAll('li.clearfix')).map(li => {
+        const t = li.querySelector('.catalogue_title');
+        const num = li.querySelector('.pl5.hour');
+        const cls = String(li.className);
+        return {
+          num: num ? (num.innerText || '').trim() : '',
+          title: t ? (t.getAttribute('title') || t.innerText || '').trim() : '',
+          kind: /font_gray_inclined|chapter/.test(cls) ? 'chapter' : (/video/.test(cls) ? 'video' : 'section'),
+          current: /current_play/.test(cls)
+        };
+      }).filter(r => r.title || r.num);
+    },
+    /** 面板进度：与其它平台同口径 {pct,done,total,remainSec,etaSec}。数据来自接口旁路缓存，同步返回。 */
+    progressInfo() { return this._p; },
+    /** 站点倍速（只用站点自己的菜单，不直接改 video.playbackRate）：rate ∈ '1.5' | '1.25' | '1.0' */
+    setRate(rate) {
+      try {
+        const item = document.querySelector('.speedList [rate="' + rate + '"]');
+        if (item) { item.click(); log('知到倍速 → ' + rate); return true; }
+        const box = document.querySelector('.speedBox');
+        if (box) log('知到倍速菜单未展开（.speedBox 需要悬停）', rate);
+      } catch (e) { err(e); }
+      return false;
+    },
+    player() { return document.querySelector('video.vjs-tech') || document.querySelector('video') || null; },
+    onResponse(url, body) {
+      try {
+        if (/learning\/videolist/.test(url) && body && body.data && body.data.videoChapterDtos) {
+          this._tree = body.data.videoChapterDtos;
+          this._refresh();
+        } else if (/learning\/queryStuyInfo/.test(url) && body && body.data) {
+          this._state = body.data;                 // { lesson:{}, lv:{} }
+          this._refresh();
+        } else if (/popupAnswer\/loadVideoPointerInfo/.test(url) && body && body.data) {
+          // 弹题点位：{ questionPoint:[{timeSec,questionIds}] }（题型/作答 UI 待接，先留档）
+          state.zhsQuiz = { points: body.data.questionPoint || [], at: now() };
+          if ((body.data.questionPoint || []).length) log('知到弹题点位', JSON.stringify(body.data.questionPoint).slice(0, 120));
+        }
+      } catch (e) { err(e); }
+    },
+    /** 用接口数据重算进度（同步） */
+    _refresh() {
+      try {
+        if (!this._tree || !this._state) return;
+        const lessons = this._state.lesson || {}, lv = this._state.lv || {};
+        let total = 0, done = 0, remainSec = 0;
+        for (const ch of this._tree) {
+          for (const l of (ch.videoLessons || [])) {
+            const smalls = (l.ishaveChildrenLesson && l.videoSmallLessons && l.videoSmallLessons.length) ? l.videoSmallLessons : null;
+            for (const u of (smalls || [l])) {
+              const st = (smalls ? lv : lessons)[String(u.id)] || null;
+              const sec = Number(u.videoSec) || 0;
+              const watched = st ? Number(st.watchState) === 1 : false;
+              total++;
+              if (watched) done++;
+              else if (sec) remainSec += Math.max(0, sec - (Number(st && st.studyTotalTime) || 0));
+            }
+          }
+        }
+        if (!total) return;
+        const rate = 1.5;                        // 站点菜单最高档（1.0/1.25/1.5）
+        this._p = { total: total, done: done, pct: Math.round(done / total * 100), remainSec: remainSec, etaSec: remainSec / rate, rate: rate };
+      } catch (e) { err(e); }
+    },
+    resetRound() { this._tree = null; this._state = null; this._p = null; },
+    async poll() {
+      // 只读监看：接口数据由 onResponse 旁路缓存，poll 不发请求（降低 CDP/自动化痕迹，见 docs/CC-STATUS-LEAD.md 第 81 轮）
+      if (state.loopTicks % 10 === 0) {
+        const pr = this.progressInfo();
+        state.zhs = { kind: this.pageKind(), title: document.title.slice(0, 30), progress: pr, at: now() };
+        if (pr) log('知到监看', this.pageKind(), pr.done + '/' + pr.total, pr.pct + '%', '剩 ' + Math.round(pr.remainSec / 60) + ' 分');
+      }
+    }
+  };
+
   const P_ADAPTER = PLATFORM === 'shengsheng' ? ADAPTER_SHENGSHENG
     : PLATFORM === 'qiyang' ? ADAPTER_QIYANG
       : PLATFORM === 'webtrn' ? ADAPTER_WEBTRN
         : PLATFORM === 'chaoxing' ? ADAPTER_CHAOXING
-          : PLATFORM === 'ccjyxy' ? ADAPTER_CCJYXY : null;
+          : PLATFORM === 'ccjyxy' ? ADAPTER_CCJYXY
+            : PLATFORM === 'zhihuishu' ? ADAPTER_ZHIHUISHU : null;
 
   // ------------------------------------------------------------ 收工：全部刷完
   const DONE_KEY = 'netclass.done.' + PLATFORM;
@@ -1677,6 +1837,19 @@
 
   function mountPanel() {
     if (!CFG.panel || panelEl) return;
+    // ★★ 智慧树反检测（2026-10-15 实测定位）：站点脚本会扫 DOM，**注入的面板本身**就会被判成
+    //   「检测到异常脚本」（先弹框、3 秒后跳回 www.zhihuishu.com，带 showCloseButton:false 挡着不能学）。
+    //   实验证据：模块照常注入（XHR/fetch 钩子都在），只把 #netclass-panel 在 document_start 后移除 →
+    //     连续 8 秒无任何检测、页面不被踢；面板一挂回去就在 ~1 秒内触发。
+    //   所以 zhihuishu 默认**不挂面板**；要看面板时在控制台执行
+    //     localStorage.setItem('netclass.panel.force','1'); location.reload()  ← 刷新会被站点 404 踢，
+    //   更稳的做法是重走"我的学堂"入口（见 references/platforms.md 的 zhihuishu 章节）。
+    let forcePanel = false;
+    try { forcePanel = localStorage.getItem('netclass.panel.force') === '1'; } catch (_) { }
+    if (PLATFORM === 'zhihuishu' && !forcePanel) {
+      warn('智慧树学习页跳过面板注入（站点会据此判"异常脚本"）；需要面板见 platforms.md 的说明');
+      return;
+    }
     panelEl = document.createElement('div');
     panelEl.id = 'netclass-panel';
     // ── 视觉体系「夜航」：暖黑底 + 琥珀强调 + 细描边 + 无阴影（刻意区别于常见网课脚本的深蓝/墨绿圆角卡片）──
