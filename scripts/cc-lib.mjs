@@ -510,10 +510,12 @@ export async function playFirstSegment(tab, log = () => { }) {
   const r = await tab.ev(`(function(){
     var items = Array.from(document.querySelectorAll('.MuiListItem-root, .MuiListItemButton-root')).filter(function(e){
       return /播放|继续|重播/.test(e.innerText||'') && !/编码/.test(e.innerText||''); });
-    for (var i=0;i<items.length;i++){
-      var b = Array.from(items[i].querySelectorAll('button')).find(function(x){ return /^(播放|继续|重播)$/.test((x.innerText||'').trim()); });
-      if (b) { var seg=(items[i].innerText||'').replace(/\\s+/g,' ').trim().slice(0,34); b.click(); return JSON.stringify({label:(b.innerText||'').trim(), seg:seg}); }
-    }
+    // ★★ 必须**两轮优选**：先找「播放/继续」（= 未完成），实在没有才退到「重播」（= 已完成）。
+    //   旧写法按 DOM 顺序取第一个匹配 → 遇到"上一段已完成、按钮变成重播"时，会一直重播已完成的段，
+    //   下一段永远不开始 → 课程永远不完成、学时永远不结算（实测：resource 1408 已完成却反复重播，1415 零进度）
+    function pick(re){ for (var i=0;i<items.length;i++){ var b = Array.from(items[i].querySelectorAll('button')).find(function(x){ return re.test((x.innerText||'').trim()); }); if (b) return { i:i, b:b }; } return null; }
+    var hit = pick(/^(播放|继续)$/) || pick(/^(重播)$/);
+    if (hit) { var seg=(items[hit.i].innerText||'').replace(/\\s+/g,' ').trim().slice(0,34); hit.b.click(); return JSON.stringify({label:(hit.b.innerText||'').trim(), seg:seg}); }
     return null;
   })()`);
   if (!r || r.__err) return null;
