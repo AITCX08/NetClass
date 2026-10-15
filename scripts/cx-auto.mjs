@@ -143,6 +143,16 @@ while (Date.now() - T0 < MAXMINS * 60000) {
     break;
   }
 
+  // ★★ 定期"回补"（2026-10-15 主线补）：把"仍未完成"的节点的跳过标记清掉，让它们**在做题过程中**就重新入队。
+  //   已有的重试只在 `ALLDONE`（所有未完成叶子都被跳过）时才触发 —— 而只要有别的点还能推进就永远不满足，
+  //   于是早期被跳过的点（实测 1.2.4 章测试等 15 个）会被晾在那里没人管，日志那句"稍后回补"形同虚设。
+  //   这里每 ~12 个动作周期清一次，代价极小。
+  ST.acts = (ST.acts || 0) + 1;
+  if (ST.acts % 12 === 0) {
+    const un = await c.ev('(window.__cxAgent && window.__cxAgent.unskipUndone) ? window.__cxAgent.unskipUndone() : 0');
+    if (un) log('  ↻ 回补：清掉 ' + un + ' 个未完成节点的跳过标记，重新入队');
+  }
+
   if (s.act === 'GOTO') {
     const isNew = String(s.nextId) !== String(curId);
     if (isNew) {
