@@ -270,8 +270,53 @@ for (let i = 0; i < data.questions.length && i < LIMIT; i++) {
 }
 console.log('\n已作答 ' + answered + ' 题，勾选 ' + picked + ' 个选项');
 
+// ---------------------------------------------------------------- 提交前校验（照 OCS 的 uploadable 思路）
+// ★★ 用户明确要求：**必须每题都正确选中才能提交**。
+//   OCS 的判据（reference/ocsjs/packages/scripts/src/projects/cx.ts:937）：
+//     选项所在容器里存在 [class*="check_answer"] 才算"这一题选好了"。
+//   旧代码只看 picked > 0（**点中一个选项就提交**）→ 大量题空白提交 → 全 0 分（实测 1.2.4 就是）。
+//   注意：本段在模板字面量里 —— 注释中禁用反引号。
+const verifyRaw = await c.ev(`(function(){
+  function deep(r,d){ if(d>4) return null; try{ if(r.querySelector&&r.querySelector('.TiMu')) return r; var fs=Array.from(r.querySelectorAll('iframe')); for(var i=0;i<fs.length;i++){ var dd=null; try{dd=fs[i].contentDocument}catch(e){} if(dd){var h=deep(dd,d+1); if(h) return h;} } }catch(e){} return null; }
+  var f = deep(document,0); if(!f) return JSON.stringify({err:'no-frame'});
+  var qs = Array.from(f.querySelectorAll('.TiMu'));
+  var done = 0, blank = [];
+  qs.forEach(function(q, qi){
+    var ok = !!q.querySelector('[class*="check_answer"]');                      // OCS 判据
+    if (!ok && q.querySelector('input[type=radio]:checked, input[type=checkbox]:checked')) ok = true;   // 兜底判据
+    if (ok) done++; else blank.push(qi + 1);
+  });
+  return JSON.stringify({ total: qs.length, done: done, blank: blank.slice(0, 30) });
+})()`);
+let vv = {}; try { vv = JSON.parse(String(verifyRaw)); } catch (_) { }
+const vTotal = Number(vv.total) || 0, vDone = Number(vv.done) || 0;
+const finishRate = vTotal ? vDone / vTotal : 0;
+const uploadable = vTotal > 0 && vDone === vTotal;
+console.log('   提交前校验: 完成率 ' + (finishRate * 100).toFixed(1) + '%  (' + vDone + '/' + vTotal + ')  →  '
+  + (uploadable ? '✅ 可提交' : '⚠ 未答完，改为仅保存'));
+if (!uploadable && vv.blank && vv.blank.length) console.log('   空白题号: ' + vv.blank.join(', '));
+
+// 配置：--save-only（只保存不提交） / --need-all=false（允许未答完也提交）
+const SAVE_ONLY = String(A['save-only']) === 'true';
+const NEED_ALL = A['need-all'] === undefined ? true : String(A['need-all']) === 'true';
+
+// 未答完（或要求只保存）→ 调站点自己的 noSubmit() 暂存（OCS 同款做法：先屏蔽 alert 免得阻塞 JS 线程）
+if (SUBMIT && (!uploadable || SAVE_ONLY)) {
+  const saved = await c.ev(`(function(){
+    try {
+      var w = null;
+      (function walk(r,d){ try{ if(r.querySelector && r.querySelector('.TiMu')){ w = r.defaultView; return; } if(d>6) return; Array.from(r.querySelectorAll('iframe')).forEach(function(f){ var dd=null; try{dd=f.contentDocument}catch(e){} if(dd&&!w) walk(dd,d+1); }); }catch(e){} })(document,0);
+      if (!w) return 'no-window';
+      try { w.alert = function(){}; } catch(e) {}
+      if (typeof w.noSubmit === 'function') { w.noSubmit(); return 'noSubmit-called'; }
+      return 'no-noSubmit-fn';
+    } catch(e) { return 'ERR ' + String(e).slice(0,60); }
+  })()`);
+  console.log('   ' + (SAVE_ONLY ? '(配置:仅保存)' : '(未答完)') + ' → 暂存: ' + saved);
+}
+
 // ---------------------------------------------------------------- 提交
-if (SUBMIT && data.submitBtn && picked > 0) {
+if (SUBMIT && data.submitBtn && (uploadable || !NEED_ALL) && !SAVE_ONLY) {
   const click = async (x, y) => {
     await c.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none' });
     await sleep(80);
