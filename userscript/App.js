@@ -1791,6 +1791,11 @@
     /** 本课程进度与预估（面板同源）：{pct, done, total, remainSec, etaSec} */
     progress: () => courseProgress(),
     webtrn: (P_ADAPTER && P_ADAPTER.id === 'webtrn') ? P_ADAPTER : null,
+    /** ★ 手动挂载控制面板（2026-10-15 补）：实测自动挂载在部分加载路径下不触发（页面 7 个 frame 都找不到
+     *  面板，但同文件里的 NetClassSettings.mount() 一调就出来）→ 把主面板也暴露出来，
+     *  这样驱动器/调试脚本可以兜底：NetClass.panel() */
+    panel: () => { try { mountPanel(); return !!document.getElementById('netclass-panel'); } catch (e) { warn('面板挂载失败', e); return false; } },
+    settings: () => { try { mountSettings(); return !!document.getElementById('netclass-settings'); } catch (e) { return false; } },
     headers: (kw) => kw ? reqHeaders.filter(r => r.url.includes(kw)).slice(-5) : reqHeaders.slice(-15),
     login: () => loginInfo,
     quizElements() {
