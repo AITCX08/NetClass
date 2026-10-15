@@ -82,7 +82,9 @@ const TARGETS = [
   { name: 'ss看门狗', match: 'ss-watch\\.mjs', uniq: true, args: ['scripts/ss-watch.mjs', '--stall=3', '--interval=30'], out: 'runs/ss-watch-console.log', err: 'runs/ss-watch.err.log' },
   { name: '提交看门狗', match: 'cx-submit-watch\\.mjs', uniq: true, args: ['scripts/cx-submit-watch.mjs', '--interval=30'], out: 'runs/cx-submit-watch-console.log', err: 'runs/cx-submit-watch.err.log' },
   { name: '进度记录', match: 'progress-report\\.mjs', uniq: true, args: ['scripts/progress-report.mjs', '--every=300'], out: 'runs/progress-console.log', err: 'runs/progress.err.log' },
-  { name: '长春驱动', match: 'cc-auto\\.mjs --port', uniq: true, args: ['scripts/cc-auto.mjs', '--port', '9228', '--tab', '0', '--secs', '10'], out: 'runs/cc-driver.log', err: 'runs/cc-driver.err.log' },
+  // 长春驱动归 Agent B 独占（9228 同时只能一个会话，多开必 423 Locked）。
+  // ★ 主管只【监视】不【启动】它，避免和 Agent B 抢标签（2026-10-15 主线让路）。
+  { name: '长春驱动', match: 'cc-auto\\.mjs --port', uniq: true, args: ['scripts/cc-auto.mjs', '--port', '9228', '--tab', '0', '--secs', '10'], out: 'runs/cc-driver.log', err: 'runs/cc-driver.err.log', watchOnly: true },
   { name: '学习通驱动', match: 'cx-auto\\.mjs --port', uniq: true, args: ['scripts/cx-auto.mjs', '--port', '9227', '--secs', '10', '--maxmins', '400'], out: 'runs/cx-driver.out.log', err: 'runs/cx-driver.err.log' },
 ];
 
@@ -158,7 +160,12 @@ for (;;) {
       }
       pids = [keep];
     }
-    if (!pids.length) { issues.push(t.name + '缺失'); if (!DRY) spawnDetached(t.args, t.out, t.err); }
+    if (!pids.length) {
+      issues.push(t.name + '缺失');
+      // ★ watchOnly：只监视不启动（长春驱动归 Agent B 独占，多开会 423 Locked）
+      if (t.watchOnly) log('  ⚠ ' + t.name + ' 不在运行（只监视不启动 —— 归 Agent B 独占，避免争抢）');
+      else if (!DRY) spawnDetached(t.args, t.out, t.err);
+    }
   }
 
   // ★ 顺手把"基础设施进程"的可见控制台窗口收掉（用户要求本机不弹窗）
