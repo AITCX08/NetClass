@@ -1575,7 +1575,10 @@
     return h ? (h + 'h' + (m ? m + 'm' : '')) : (m + 'min');
   }
 
-  // ------------------------------------------------------------ 设置面板
+  // ------------------------------------------------------------ 控制面板
+  // ⚠️ 这个声明不能少！加设置面板时我误删过它，导致 mountPanel() 抛 ReferenceError: panelEl is not defined，
+  //    表现为"面板整块不出现"且控制台只有这一行报错（排查花了一整轮）。
+  let panelEl = null;
   // ★ 声明式配置表（思路来自 OCS：reference/ocsjs .../cx.ts 的 settings schema）
   //   加一项只要往 SETTINGS_SCHEMA 里加一行，UI 与存储自动生效。
   //   跨进程项（如"章测试仅保存不提交"）写进 localStorage，由 scripts/cx-answer-quiz.mjs 读取。
