@@ -233,7 +233,12 @@
       if (!key) return reject(new Error('页面里没有 DeepSeek key（加载器没下发？跑 node scripts/ds-key.mjs set --key ... 后刷新页面）'));
       const model = window.__NC_DS_MODEL__ || CFG.dsModel || 'deepseek-chat';
       const sys = '你是网课随堂题的答题助手。只输出选项字母，不要解释。'
-        + '多选题输出所有正确选项字母，用英文逗号分隔（如 B,D）。判断题按选项字母输出。';
+        + '多选题输出所有正确选项字母，用英文逗号分隔（如 B,D）。判断题按选项字母输出。'
+        // ★ 抑制"多选题全选"（2026-10-15 补）：实测模型遇到稍有不确定的多选题就输出 A,B,C,D，
+        //   而多选全选基本必错。这里明确要求逐项判断并限制数量，实测能显著提高命中率。
+        + '多选题请**逐项独立判断**每个选项本身是否正确，不要因为"看起来都对"就全选；'
+        + '网课多选题通常只有 2~3 个正确选项。除非你确认每一个选项都成立，否则不要输出全部选项。'
+        + '若某个选项拿不准，就不要选它（宁少勿滥）。';
       const user = '题型：' + String(payload.type || '单选题')
         + '\n题目：' + String(payload.question || '').slice(0, 900)
         + '\n选项：\n' + String(payload.options || '').slice(0, 3000) + '\n\n只输出字母。';
