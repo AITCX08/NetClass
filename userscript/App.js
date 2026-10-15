@@ -1512,19 +1512,30 @@
     if (!CFG.panel || panelEl) return;
     panelEl = document.createElement('div');
     panelEl.id = 'netclass-panel';
-    panelEl.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:2147483646;font:12px/1.65 "Segoe UI",system-ui,"Microsoft YaHei",sans-serif;background:rgba(18,18,22,.92);color:#eaeaea;border-radius:10px;padding:8px 10px;min-width:200px;box-shadow:0 8px 24px rgba(0,0,0,.4);user-select:none';
+    // ── 视觉体系「夜航」：暖黑底 + 琥珀强调 + 细描边 + 无阴影（刻意区别于常见网课脚本的深蓝/墨绿圆角卡片）──
+    const C = { bg: '#191512', bd: '#3a2f24', fg: '#f0e7db', mut: '#9b8d7c', accent: '#e0a253', ok: '#7fc08a' };
+    panelEl.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483646;'
+      + 'font:12px/1.6 "Segoe UI",system-ui,"Microsoft YaHei",sans-serif;letter-spacing:.2px;'
+      + 'background:' + C.bg + ';color:' + C.fg + ';border:1px solid ' + C.bd + ';border-radius:6px;'
+      + 'padding:9px 11px;min-width:214px;user-select:none';
     const draw = () => {
       if (!panelEl) return;
       const v = pickVideo();
       const vs = v ? `${Math.floor(v.currentTime || 0)}s/${Math.floor(v.duration || 0)}s x${v.playbackRate}${v.paused ? ' ⏸' : ' ▶'}` : '无视频';
-      const BTN = 'background:#2b2b34;color:#eaeaea;border:1px solid #4d4d5a;border-radius:5px;padding:3px 9px;font:12px/1.5 inherit;display:inline-block;cursor:pointer';
+      const BTN = 'background:transparent;color:' + C.fg + ';border:1px solid ' + C.bd + ';border-radius:4px;padding:3px 9px;font:12px/1.5 inherit;display:inline-block;cursor:pointer';
       const btn = (a, label) => `<button data-a="${a}" style="${BTN}">${label}</button>`;
       const pr = courseProgress();
       const prog = pr
         ? `进度 <b>${pr.pct}%</b> (${pr.done}/${pr.total}) · 剩 ${fmtDur(pr.remainSec)} → 约 <b>${fmtDur(pr.etaSec)}</b>${pr.unknown ? ` <span style="opacity:.5">(${pr.unknown}节无时长)</span>` : ''}`
         : '进度 —';
+      const bar = `<div style="height:5px;background:#241d17;border-radius:3px;overflow:hidden;margin:7px 0 6px"><div style="height:100%;width:${pr ? Math.max(0, Math.min(100, pr.pct)) : 0}%;background:${C.accent};transition:width .4s"></div></div>`;
       panelEl.innerHTML =
-        `<div style="font-weight:600">NetClass ${VERSION} <span style="opacity:.55">${PLATFORM}</span> <span style="opacity:.55;color:${state.allDone ? '#6ee7a8' : 'inherit'}">${state.allDone ? '已完成' : (CFG.enabled ? '运行' : '暂停')}</span></div>
+        `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+           <div><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${CFG.enabled && !state.allDone ? C.ok : C.mut};margin-right:6px;vertical-align:middle"></span><b style="letter-spacing:.4px">夜航</b> <span style="color:${C.mut};font-size:11px">v${VERSION}</span></div>
+           <div><span style="border:1px solid ${C.accent};color:${C.accent};border-radius:3px;padding:0 5px;font-size:11px">${PLATFORM_LABEL || PLATFORM}</span></div>
+         </div>
+         <div style="color:${C.mut};margin-top:5px">${state.allDone ? '本课程已完成' : (CFG.enabled ? '自动处理中' : '已暂停')}</div>
+         ${bar}
          <div style="opacity:.9">${prog}</div>
          <div style="opacity:.8">视频 ${state.video.seen} · 结束 ${state.video.ended} · 倍速修正 ${state.video.rateFixes}</div>
          <div style="opacity:.8">弹题 见${state.quiz.seen} 答${state.quiz.answered} ✔${state.quiz.correct} ✘${state.quiz.wrong} · DS ${state.quiz.dsOk}/${state.quiz.dsAsk}${state.quiz.dsErr ? ' 失败' + state.quiz.dsErr : ''} · 库${Object.keys(bank).length}</div>
