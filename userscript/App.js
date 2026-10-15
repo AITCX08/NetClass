@@ -18,8 +18,9 @@
   const PLATFORM = /shengshengketang/i.test(HOST) ? 'shengsheng'
     : /bjqiyang/i.test(HOST) ? 'qiyang'
       : /webtrn\.cn/i.test(HOST) ? 'webtrn'
-        : /chaoxing\.com/i.test(HOST) ? 'chaoxing' : 'unknown';
-  const PLATFORM_LABEL = { shengsheng: '心理学导论', qiyang: '职业培训', webtrn: '教师培训', chaoxing: '学习通', unknown: '未知平台' }[PLATFORM];
+        : /chaoxing\.com/i.test(HOST) ? 'chaoxing'
+          : /ccjyxy\.cn/i.test(HOST) ? 'ccjyxy' : 'unknown';
+  const PLATFORM_LABEL = { shengsheng: '心理学导论', qiyang: '职业培训', webtrn: '教师培训', chaoxing: '学习通', ccjyxy: '长春教师培训', unknown: '未知平台' }[PLATFORM];
   const log = (...a) => console.log(NS, ...a);
   const warn = (...a) => console.warn(NS, ...a);
   const now = () => Date.now();
@@ -283,6 +284,23 @@
     }, CFG.dsTimeoutMs);
     const letters = (raw.toUpperCase().match(/[A-H]/g) || []).filter(l => names.includes(l));
     const pick = [...new Set(letters)];
+    // ★ 判断题兜底：选项不是字母（学习通判断题的选项是「对/错」），模型会直接答「对」「错」，
+    //   原来只认 A-H 会抛「模型返回无法解析：对」（实测踩过）→ 这里把语义映射回选项 name。
+    if (!pick.length) {
+      const norm = String(raw).trim();
+      const YES = /^(对|正确|是|√|T|TRUE|Y|YES)/i, NO = /^(错|错误|否|×|X|F|FALSE|N|NO)/i;
+      for (const re of [YES, NO]) {
+        if (re.test(norm)) {
+          const hit = (q.optionList || []).find(o => re.test(String(o.data || '').trim()));
+          if (hit) return String(hit.name);
+        }
+      }
+      const hit2 = (q.optionList || []).find(o => {
+        const t = String(o.data || '').trim();
+        return t && (norm === t || norm.indexOf(t) >= 0 || t.indexOf(norm) >= 0);
+      });
+      if (hit2) return String(hit2.name);
+    }
     if (!pick.length) throw new Error('模型返回无法解析：' + raw.slice(0, 60));
     if (q.type === 2) return pick.sort().join(',');
     if (q.type === 3) return pick[0];            // 判断题在站点里通常是 对/错 两个选项
@@ -1367,24 +1385,39 @@
       }
       return out.slice(0, 200);
     },
-    /** 面板/进度：任务点数与"已完成"数（完成态用类名判断：finish|complete|done|已完成|点过） */
+    /** 面板进度：与其它平台**同口径** —— {pct, done, total, remainSec, etaSec}
+     *  ★ 判据（2026-10-15 实测校准）：树上每个任务点里有个 `span.roundpoint`，
+     *    **类名**就是状态：`roundpoint blue` = 已完成；`roundpoint orange01 jobCount` = 未完成。
+     *  ⚠️ 旧实现的两处错误（导致面板一直显示 0% (0/91)）：
+     *    ① 用 `a[href*="studentstudy"]` 找节点 —— 但树上其实是 `[onclick^="getTeacherAjax"]`，
+     *       **JS 渲染、根本没有 href**，所以一条都没遍历到；
+     *    ② 要求节点自身 `innerText` 带编号 —— 实际这些节点**自身没有文字**（文字在祖先 `.ncells` 里）。
+     *  另外注意：`.jobUnfinishCount` 虽然存在（59 个），但**值全是空的且 hidden**，不能用来计数。 */
     progressInfo() {
-      const nodes = Array.from(document.querySelectorAll('[class*=chapter_item],[class*=chapterItem],[class*=catalog_item],.chapter'));
-      if (!nodes.length) return null;
-      let total = 0, done = 0;
-      for (const n of nodes) {
-        const cls = String(n.className || '');
-        const txt = (n.innerText || '').replace(/\s+/g, ' ');
-        const cnt = Number((txt.match(/\s(\d+)\s*$/) || [])[1] || 0);   // 节点后的数字 ≈ 任务点数
-        const isDone = /finish|complete|done|已完成|已学/.test(cls) || /已完成|已学/.test(txt);
-        if (cnt > 0) total += cnt;
-        else if (!/^[\d.]/.test(txt)) continue;
-        if (isDone && cnt > 0) done += cnt;
-        else if (isDone) done += 1;
-      }
-      if (!total) total = nodes.length;
-      if (!done) done = nodes.filter(n => /finish|complete|done|已完成|已学/.test(String(n.className || '') + (n.innerText || ''))).length;
-      return { total, done, pct: total ? Math.round(done / total * 100) : 0, remainSec: 0, etaSec: 0, unit: '任务点' };
+      try {
+        const g = k => { try { return localStorage.getItem('ncCx:' + k); } catch (_) { return null; } };
+        const rate = (typeof effRate === 'function' ? effRate() : 1.5) || 1.5;
+        let total = 0, done = 0;
+        // ① 树上直接数 roundpoint（最准）
+        const rp = Array.from(document.querySelectorAll('span.roundpoint'));
+        if (rp.length) {
+          for (const e of rp) {
+            const cls = String(e.className || '');
+            if (/jobCount|orange01/.test(cls)) { total++; }           // 未完成
+            else if (/blue/.test(cls)) { total++; done++; }           // 已完成
+          }
+        }
+        // ② 树上取不到（页面还没渲染树）→ 用驱动器写进 localStorage 的计数
+        if (!total) {
+          total = Number(g('total') || 0);
+          done = Number(g('doneN') || 0);
+        }
+        if (!total) return null;
+        const durSum = Number(g('durSum') || 0), durCnt = Number(g('durCnt') || 0);
+        const avg = durCnt ? durSum / durCnt : 0;
+        const remainSec = avg * Math.max(0, total - done);
+        return { total: total, done: done, pct: total ? Math.round(done / total * 100) : 0, remainSec: remainSec, etaSec: remainSec / rate, rate: rate };
+      } catch (_) { return null; }
     },
     player() { return document.querySelector('video') || null; },
     onResponse() { },
@@ -1525,13 +1558,13 @@
       const BTN = 'background:transparent;color:' + C.fg + ';border:1px solid ' + C.bd + ';border-radius:4px;padding:3px 9px;font:12px/1.5 inherit;display:inline-block;cursor:pointer';
       const btn = (a, label) => `<button data-a="${a}" style="${BTN}">${label}</button>`;
       const pr = courseProgress();
-      const prog = pr
-        ? `进度 <b>${pr.pct}%</b> (${pr.done}/${pr.total}) · 剩 ${fmtDur(pr.remainSec)} → 约 <b>${fmtDur(pr.etaSec)}</b>${pr.unknown ? ` <span style="opacity:.5">(${pr.unknown}节无时长)</span>` : ''}`
-        : '进度 —';
+      // 全平台统一口径：进度百分比 + 已完成/总数 + 剩余 + 预估（学习通也走这条，不再单列"视频总时长"）
+      const prog = !pr ? '进度 —'
+        : `进度 <b>${pr.pct}%</b> (${pr.done}/${pr.total}) · 剩 ${fmtDur(pr.remainSec)} → 约 <b>${fmtDur(pr.etaSec)}</b>${pr.unknown ? ` <span style="opacity:.5">(${pr.unknown}节无时长)</span>` : ''}`;
       const bar = `<div style="height:5px;background:#241d17;border-radius:3px;overflow:hidden;margin:7px 0 6px"><div style="height:100%;width:${pr ? Math.max(0, Math.min(100, pr.pct)) : 0}%;background:${C.accent};transition:width .4s"></div></div>`;
       panelEl.innerHTML =
         `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-           <div><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${CFG.enabled && !state.allDone ? C.ok : C.mut};margin-right:6px;vertical-align:middle"></span><b style="letter-spacing:.4px">夜航</b> <span style="color:${C.mut};font-size:11px">v${VERSION}</span></div>
+           <div><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${CFG.enabled && !state.allDone ? C.ok : C.mut};margin-right:6px;vertical-align:middle"></span><b style="letter-spacing:.4px">NetClass</b> <span style="color:${C.mut};font-size:11px">v${VERSION}</span></div>
            <div><span style="border:1px solid ${C.accent};color:${C.accent};border-radius:3px;padding:0 5px;font-size:11px">${PLATFORM_LABEL || PLATFORM}</span></div>
          </div>
          <div style="color:${C.mut};margin-top:5px">${state.allDone ? '本课程已完成' : (CFG.enabled ? '自动处理中' : '已暂停')}</div>
@@ -1554,6 +1587,11 @@
           const a = b.dataset.a;
           if (a === 'toggle') {
             CFG.enabled = !CFG.enabled;
+            // ★ 同步"暂停标记"给外部驱动器（cc-auto.mjs / cx-auto.mjs 每轮会读它）
+            //   面板只能控制页面内的模块；驱动器是控制器上的独立进程，靠这个标记联动，
+            //   否则用户按了暂停，驱动器还在外面继续操作（实测踩过）
+            try { localStorage.setItem('ncCc:paused', CFG.enabled ? '0' : '1'); } catch (_) { }
+            try { localStorage.setItem('ncCx:paused', CFG.enabled ? '0' : '1'); } catch (_) { }
             if (CFG.enabled) {          // 用户在面板重新点「启动」→ 清掉已完成标记，重新扫描
               state.allDone = false;
               try { localStorage.removeItem(DONE_KEY); } catch (_) { }
