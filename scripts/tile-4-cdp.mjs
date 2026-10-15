@@ -6,7 +6,7 @@
  *   但 **CDP 的 `Browser.getWindowForTarget` 能拿到窗口句柄和 bounds** —— 而且 `Browser.setWindowBounds`
  *   是 Chrome 自己的接口，比外部 MoveWindow 更可靠（不会被 Chrome 的窗口管理覆盖回去）。
  *
- * 布局（笔记本屏 1024×768 → 每窗 512×384）：
+ * 布局（笔记本真实屏 **1920×1080** → 每窗 960×540）：
  *   左上(0,0)      右上(512,0)
  *   左下(0,384)    右下(512,384)
  *
@@ -15,7 +15,10 @@
 const PORTS = [9224, 9227, 9228, 9229];
 const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf('--' + k); return i >= 0 ? Number(argv[i + 1] || d) : d; };
-const W = arg('w', 512), H = arg('h', 384);
+// ★ 默认 960x540 = 1920x1080 屏的 2x2（笔记本真实分辨率）。
+//   踩过的坑：System.Windows.Forms.Screen 报的是 WinDisc 虚拟显示器 1024x768，
+//   按那个摆只会占满屏幕左上角。真实分辨率要从 GPU 读（RTX 3050 = 1920x1080）。
+const W = arg('w', 960), H = arg('h', 540);
 const SLOTS = [[0, 0], [W, 0], [0, H], [W, H]];
 
 async function withTarget(port, fn) {
