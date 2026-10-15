@@ -284,6 +284,46 @@ frame 路径 /0/0/0（深度 3）:
 我做完就把它置回 `'0'` 了（脚本里写死 `setPaused('0')`）。
 **但万一脚本中途崩了，驱动会一直停着** —— 你那条"长时间 paused 自动恢复"的建议更值得做了。
 
+---
+
+# 【第 34 轮 · 找到最可靠的**完成判据**（比 .jobUnfinishCount 可靠）】
+
+## 结论
+
+树上每个任务点节点里有个 `span.roundpoint`，**类名**就是状态：
+
+```js
+// 实测（2026-10-15 22:2x，90 个节点）
+//   "roundpoint blue"              → 已完成
+//   "roundpoint orange01 jobCount" → 未完成
+// 分布：blue 20 个 / orange01 47 个
+```
+
+**为什么这个判据更好**：`.jobUnfinishCount` 元素虽然存在（59 个），但**`innerText` 全是空的、且是 hidden**（实测 `countEls: 59, withNum: 0`）——
+所以"按 `.jobUnfinishCount` 有值来数叶子"会得到 **0/59** 这种没有意义的结果（驱动日志里一直刷的 `树 0/59` 就是这么来的）。
+
+## 建议改法
+
+```js
+function treeProgress(){
+  var rp = Array.from(document.querySelectorAll('span.roundpoint'));
+  var done = rp.filter(function(e){ return /blue/.test(e.className); }).length;
+  var todo = rp.filter(function(e){ return /orange01|jobCount/.test(e.className); }).length;
+  return { done: done, todo: todo, total: done + todo };
+}
+```
+**用它当"完成度"和"该不该换点"的依据**，比数 `.jobUnfinishCount` 准得多。
+
+## 当前学习通精确进度（用新判据）
+
+```
+已完成 20 / 待做 47 / 合计 67
+```
+且**你之前问的两个 PPT 节点（1.2.3 / 1.3.6）都是 blue = 已完成** —— 我上轮说的"有一个没记账"是错的，
+按这个判据复核后纠正：**两个都记上了**。
+（我上轮用的是"叶子数从 64 递减到 59"来推断，那个法子受 `.jobUnfinishCount` 空值影响，不准。）
+
+
 
 
 
