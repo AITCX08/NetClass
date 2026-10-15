@@ -24,8 +24,9 @@ const num = (k, d) => {
 const INTERVAL = num('interval', 60);
 const DRY = argv.includes('--dry');
 
-const { appendFileSync, mkdirSync } = await import('node:fs');
+const { appendFileSync, mkdirSync, openSync } = await import('node:fs');
 const { execFileSync } = await import('node:child_process');
+const { spawn } = await import('node:child_process');
 mkdirSync('runs', { recursive: true });
 const log = (m) => {
   const line = '[' + new Date().toLocaleTimeString('zh-CN', { hour12: false }) + '] ' + m;
@@ -49,13 +50,19 @@ function pidsOf(match) {
 
 function spawnDetached(args, outLog, errLog) {
   if (DRY) { log('  (dry) 会启动: node ' + args.join(' ')); return null; }
+  // ★ 用 Node 的 spawn 直接拉起，**不再经 PowerShell 中转**：
+  //   旧版走 `powershell.exe Start-Process`，实测会 `spawnSync powershell.exe ETIMEDOUT`
+  //   → 该补的进程没补上，而主管以为已处理（最危险的那种"假成功"）。
+  //   日志用**文件 fd** 重定向（不是管道）——管道在受限沙箱下会 EPERM。
   try {
-    const p = execFileSync('powershell.exe', ['-NoProfile', '-Command',
-      `Start-Process -FilePath 'node' -ArgumentList ${args.map(a => "'" + a + "'").join(',')} -WorkingDirectory '${process.cwd()}' -WindowStyle Hidden -PassThru -RedirectStandardOutput '${outLog}' -RedirectStandardError '${errLog}' | Select-Object -ExpandProperty Id`
-    ], { encoding: 'utf8', timeout: 25000 });
-    const pid = Number(String(p).trim());
-    log('  🚀 启动 ' + args[0] + ' pid=' + pid);
-    return pid;
+    let out = 'ignore', err = 'ignore';
+    try { out = openSync(outLog, 'a'); err = openSync(errLog, 'a'); } catch (_) { out = 'ignore'; err = 'ignore'; }
+    const child = spawn(process.execPath, args, {
+      cwd: process.cwd(), detached: true, windowsHide: true, stdio: ['ignore', out, err]
+    });
+    child.unref();
+    log('  🚀 启动 ' + args[0] + ' pid=' + child.pid);
+    return child.pid;
   } catch (e) { log('  ✗ 启动失败 ' + args[0] + ': ' + String(e).slice(0, 70)); return null; }
 }
 
