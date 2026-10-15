@@ -97,23 +97,30 @@ function rebuildTunnel(port) {
   } catch (e) { log('  ✗ 重建 ' + port + ' 隧道失败: ' + String(e).slice(0, 70)); }
 }
 
-// ★★ 自锁：同一时间只允许一个主管（第二道保险）
-//   第一道是 pidsOf 的 fail-closed；但若两个主管被判"同时启动"（计划任务 + 手动），
-//   它们可能互相看不见对方 → 双份复制。用 PID 文件互斥，确定性更强。
-const LOCK_FILE = 'runs/supervisor.lock';
-try {
-  const { readFileSync, writeFileSync } = await import('node:fs');
-  let oldPid = 0;
-  try { oldPid = Number(String(readFileSync(LOCK_FILE, 'utf8')).trim()) || 0; } catch (_) { }
-  if (oldPid && oldPid !== process.pid) {
-    let alive = false;
-    try { process.kill(oldPid, 0); alive = true; } catch (_) { alive = false; }   // 0 号信号只探活
-    if (alive) { console.log('[supervisor] 已有实例在跑 pid=' + oldPid + ' → 本实例退出（自锁）'); process.exit(0); }
+// ★★ 自身去重：同一时间只允许一个主管
+//   踩过的三条弯路（都别再用）：
+//     ① `process.kill(pid, 0)` 判活 —— 计划任务在**不同用户上下文**，抛 EPERM 被误当"不存在"
+//     ② 心跳文件判活 —— 第二实例常在第一实例写出心跳**之前**就起来了，照样放行
+//     ③ 只在启动时检查 —— 两个几乎同时启动时都会通过
+//   ✅ 最终做法：复用**已验证可用的 pidsOf**（枚举进程）做自身去重，
+//      并且**每轮循环都复查一次**（不只启动时）：不是最小 pid 就退出。
+function dedupeSelf(cycle) {
+  const mine = pidsOf('supervisor\\.mjs');
+  if (mine === null) return false;                 // 枚举失败 → 不动（fail-closed）
+  const others = mine.filter(p => p !== process.pid);
+  if (!others.length) return false;
+  const keep = Math.min(...mine);
+  if (keep !== process.pid) {
+    log('  ⚠ 还有其它主管在跑（' + mine.join(',') + '）→ 本实例 pid=' + process.pid + ' 让位退出' + (cycle ? '（第 ' + cycle + ' 轮复查发现）' : ''));
+    process.exit(0);
   }
-  writeFileSync(LOCK_FILE, String(process.pid));
-} catch (e) { console.log('[supervisor] 自锁建立失败（继续跑）: ' + String(e).slice(0, 60)); }
+  log('  ⚠ 发现 ' + others.length + ' 个多余主管（' + others.join(',') + '），本实例 pid=' + process.pid + ' 保留');
+  return true;
+}
 
+let cycleNo = 0;
 log('=== 系统级主管启动（每 ' + INTERVAL + 's 全量体检）===' + (DRY ? ' [dry]' : ''));
+dedupeSelf(0);
 
 for (;;) {
   const ports = [];
@@ -155,5 +162,7 @@ for (;;) {
   }
 
   log('CDP: ' + ports.join(' ') + (down.length ? '（已尝试重建 ' + down.join(',') + '）' : '') + '  |  ' + (issues.length ? '修复: ' + issues.join('、') : '全部在位'));
+  cycleNo++;
+  dedupeSelf(cycleNo);        // ★ 每轮复查：不是最小 pid 就让位退出
   await new Promise(r => setTimeout(r, INTERVAL * 1000));
 }
