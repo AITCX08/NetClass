@@ -242,8 +242,11 @@ for (let i = 0; i < data.questions.length && i < LIMIT; i++) {
   let letters = (raw.toUpperCase().match(/[A-D]/g) || []);
   // 判断题：对/错 映射到 A/B
   if (q.kind === 'judge') {
-    if (/对|正确|是|TRUE/.test(raw)) letters = ['A'];
-    else if (/错|错误|否|FALSE/.test(raw)) letters = ['B'];
+    // ★★ 必须大小写不敏感（2026-10-15 主线修）：DeepSeek 返回的是小写 "true"/"false"，
+    //   而旧正则是大写 TRUE/FALSE → **匹配不上** → 落到默认分支 letters=['A']
+    //   → **所有判断题都被答成"对"**（实测 6 道判断题全 A，白丢一半分）。
+    if (/对|正确|是|true/i.test(raw)) letters = ['A'];
+    else if (/错|错误|否|false/i.test(raw)) letters = ['B'];
     else if (!letters.length) letters = ['A'];
     letters = letters.slice(0, 1);
   } else if (q.kind === 'single') {
