@@ -1,6 +1,6 @@
 /** webtrn-login.mjs — 登录教师培训平台（只用给的账密；若出现验证码则停下来交人工） */
 const PORT = Number(process.argv[2] || 9226);
-const USER = process.argv[3] || '18604341157';
+const USER = process.argv[3] || process.env.NC_USER || '';   // ★ 开源：账号从参数/环境变量读，不再硬编码
 const PASS = process.argv[4] || '341157';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
