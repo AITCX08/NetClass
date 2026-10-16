@@ -2254,8 +2254,10 @@
 
   // ★ 把面板摆到【真实窗口】的右下角（见 mountPanel 处的说明）
   //   window.outerWidth/Height = 真实窗口尺寸；视口被 Emulation 撑大时它就是唯一可信来源。
-  //   outerHeight 含标题栏+地址栏，按 CHROME_ALLOWANCE 扣掉，保证面板底部不被切。
-  const CHROME_ALLOWANCE = 96;
+  //   ⚠ CHROME_ALLOWANCE 的来历（2026-10-16 用户第二次反馈"还是被遮挡"后用截图量的）：
+  //     outerHeight 含【标题栏 + 标签栏 + 地址栏 + 那条黄色"Chrome 测试版仅适用于自动测试"警告条】，
+  //     实测合计约 130px（先前按 96 算 → 面板底部落在 400，而可见区只有 ~380 → 被切）。
+  const CHROME_ALLOWANCE = 136;
   function placePanel() {
     const p = document.getElementById('netclass-panel');
     if (!p) return;
@@ -2311,6 +2313,14 @@
 
   function mountPanel() {
     if (!CFG.panel || panelEl) return;
+    // ★ 清掉 DOM 里残留的旧面板（2026-10-16 用户截图里发现【两个面板】）：
+    //   守卫只看变量 panelEl —— 模块重新注入时它是 null，但 DOM 里上一份还在，
+    //   于是又挂一个出来（实测学习通页面上同时出现左上+右下两个面板）。
+    //   这里按 id 全量清理，保证页面里只有一个面板元素。
+    try {
+      const olds = document.querySelectorAll('#netclass-panel, #netclass-expand');
+      for (const o of Array.from(olds)) { if (o && o !== panelEl) { try { o.remove(); } catch (_) { } } }
+    } catch (_) { }
     // ★★ 智慧树反检测（2026-10-15 实测定位）：站点脚本会扫 DOM，**注入的面板本身**就会被判成
     //   「检测到异常脚本」（先弹框、3 秒后跳回 www.zhihuishu.com，带 showCloseButton:false 挡着不能学）。
     //   实验证据：模块照常注入（XHR/fetch 钩子都在），只把 #netclass-panel 在 document_start 后移除 →
