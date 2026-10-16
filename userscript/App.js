@@ -2305,9 +2305,18 @@
     }
     btn.textContent = col ? '+' : '−';
     btn.title = col ? '展开 NetClass 面板' : '收起 NetClass 面板';
+    placeToggle();
+  }
+  // ★ 把 +/− 按钮贴到【真实窗口】右上角（2026-10-16 用户反馈"看不到右上角的 −"）
+  //   根因：applyPanelCollapsed 只在挂载/点击时各调一次 —— 挂载那一刻窗口若还是 1920 宽
+  //   （浏览器刚拉起、平铺还没生效），按钮就永久停在 x=1892（窗口其实只有 960 宽）→ 跑到窗口外。
+  //   所以定位抽成独立函数，由 2 秒循环一起重摆（和 placePanel 同样待遇）。
+  function placeToggle() {
+    const b = document.getElementById('netclass-toggle');
+    if (!b) return;
     const vw = window.outerWidth || window.innerWidth;
-    btn.style.left = Math.max(8, vw - 20 - 8) + 'px';
-    btn.style.top = '6px';
+    b.style.left = Math.max(8, vw - 20 - 8) + 'px';
+    b.style.top = '6px';
   }
   function setPanelCollapsed(v) {
     try { localStorage.setItem(PANEL_COLLAPSED_KEY, v ? '1' : '0'); } catch (_) { }
@@ -2432,7 +2441,7 @@
     };
     draw();
     // 面板高度会随内容变（进度/秒表那行高度浮动）→ 每轮重摆一次，保证始终贴住真实窗口右下角
-    timers.push(setInterval(() => { draw(); placePanel(); }, 2000));
+    timers.push(setInterval(() => { draw(); placePanel(); placeToggle(); }, 2000));
     (document.body || document.documentElement).appendChild(panelEl);
     applyPanelCollapsed();      // ★ 尊重上次的收起/展开状态（收起时留「展开」按钮）
     placePanel();               // ★ 摆到真实窗口的右下角
