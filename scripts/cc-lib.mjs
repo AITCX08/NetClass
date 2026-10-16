@@ -95,6 +95,20 @@ export function releaseCourse(name, tag, completed = false) {
   writeClaims(o);
 }
 
+/** 视口保活：多次开关标签后，窗口常被压到 ~237px 高 → 按钮点击全部落空。
+ *  每次 acquireTab 之后调用一次（幂等）。 */
+export async function ensureViewport(tab, w = 1200, h = 1000) {
+  try {
+    const v = await tab.ev(`JSON.stringify([window.innerWidth, window.innerHeight])`);
+    let iw = 0, ih = 0;
+    try { const a = JSON.parse(v || '[0,0]'); iw = a[0]; ih = a[1]; } catch (_) { }
+    if (ih >= 600 && iw >= 900) return false;
+    await tab.send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
+    await sleep(1200);
+    return true;
+  } catch (_) { return false; }
+}
+
 /** 找/开一个「属于本实例」的标签：
  *  1) targetId 匹配且 owner 是自己  2) owner==自己  3) owner 为空 → 直接占用
  *  4) 全被占 → 自己新开一个标签（绝不和别人共用同一个标签！） */
@@ -391,6 +405,7 @@ export async function enforceSingleTab(tab, log = () => { }) {
  *    → 点十几次都进不去。可靠兜底 = **整页导航回首页**（SPA 重载后 svc 会直接落到培训页）。 */
 export async function ensureTraining(tab, log = () => { }) {
   let enterTries = 0;
+  let backoffRounds = 0;      // ★ 「进入」连续失败的轮数 —— 用来决定退避多久
   for (let i = 0; i < 10; i++) {
     let s = await pageState(tab);
     if (s && s.onTrain) return true;
@@ -403,12 +418,26 @@ export async function ensureTraining(tab, log = () => { }) {
       await tab.clickText('进入');
       await sleep(6000);
       if (enterTries >= 3) {
-        log('  「进入」点不动 → 整页导航回首页重进');
-        await tab.navigate(HOME); await sleep(13000);
+        // ★★ 退避等待（2026-10-16 主线实测结论，写在 docs/CC-STATUS-LEAD.md）：
+        //   现象：停在「我的培训」时「进入」连点十几次都没反应（按钮在，点了不动）。
+        //   根因：**服务端会话残留**（多半是上一次播放页没释放干净）——
+        //         而【快速重试会让服务端一直看到"有新会话在敲门"，反而延长残留】。
+        //   实测：干等 100 秒后一次就点通。
+        //   所以：第 1 轮失败照旧 15 秒兜底；从第 2 轮起改成 **120 秒长退避**，别再硬撞。
+        backoffRounds++;
+        const waitMs = backoffRounds >= 2 ? 120000 : 15000;
+        if (waitMs >= 60000) {
+          log('  「进入」连续 ' + backoffRounds + ' 轮点不动 → 退避 ' + Math.round(waitMs / 1000) + ' 秒'
+            + '（★ 疑似服务端会话残留；快速重试反而延长残留，这里主动让路）');
+        } else {
+          log('  「进入」点不动 → 整页导航回首页重进');
+        }
+        await sleep(waitMs);
+        await tab.navigate(HOME); await sleep(waitMs >= 60000 ? 8000 : 13000);
         let s2 = await pageState(tab);
         if (s2 && s2.onTrain) return true;
         if (s2 && s2.onMyTraining) { await tab.clickText('进入'); await sleep(7000); s2 = await pageState(tab); }
-        if (s2 && s2.onTrain) return true;
+        if (s2 && s2.onTrain) { backoffRounds = 0; return true; }
         enterTries = 0;
       }
       continue;
