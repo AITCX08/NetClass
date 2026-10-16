@@ -2379,7 +2379,6 @@
            ${btn('quiz', '答题')}
            ${btn('next', '下一节')}
            ${btn('settings', '设置')}
-            ${btn('hide', '收起')}
          </div>`;
       panelEl.querySelectorAll('button').forEach(b => {
         b.onmouseenter = () => { b.style.background = '#3a3a46'; };
