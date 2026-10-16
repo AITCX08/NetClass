@@ -18,3 +18,6 @@ runs/orders/
 
 # 第三方参考源码（OCS Desktop 的适配器，只用于对照，绝不入库）
 reference/
+
+# 运行产物（含个人数据：课程名/进度/日志），不进版本库
+runs/
