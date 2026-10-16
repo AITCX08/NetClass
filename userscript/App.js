@@ -448,8 +448,48 @@
 
   /** 平台感知的倍速：用户手动设过优先，否则用各站点播放器自带的最高档（shengsheng 1.5x / qiyang 2x） */
   function effRate() {
-    if (CFG.userRate) return CFG.rate;
-    return PLATFORM === 'qiyang' ? (CFG.rateQiyang || 2) : (CFG.rateShengsheng || 1.5);
+    // ★ 统一过一遍"平台允许档位"夹取（见下面 PLATFORM_RATES）：用户设 2x 但站内只有 1.5 时返回 1.5，
+    //   避免拿一个平台根本不接受的档位去反复设、把 rateFixes 刷爆。
+    if (CFG.userRate) return clampRate(CFG.rate);
+    return clampRate(PLATFORM === 'qiyang' ? (CFG.rateQiyang || 2) : (CFG.rateShengsheng || 1.5));
+  }
+
+  // ★★ 各平台**允许**的倍速档位（2026-10-16 用户要求"为每个平台都做适配"）
+  //   依据（都是实测，不是猜的）：
+  //     zhihuishu 站点只有 .speedList 里的 1.0 / 1.25 / 1.5 —— 超档就是"外部改属性"的异常信号
+  //     ccjyxy    站点也是三档，且记账硬卡 1.25x（播 2x 也不会多记，反而要重播补录）
+  //     chaoxing  驱动实测 rate=1.5 稳定（1.5x 是站内可选档）
+  //     shengsheng / qiyang  播放器自带更高档，实测 2x 稳（见 docs/HANDOVER.md §5.37）
+  //   注意：这里只用于"**显示与夹取**"，真正改倍速仍走各适配器自己的通道
+  //   （知到必须点 .speedList 菜单、长春走 installHunter 压速、学习通走站点按钮）。
+  const PLATFORM_RATES = {
+    zhihuishu: [1, 1.25, 1.5],
+    // ccjyxy 站内菜单只有 1.0/1.25/1.5，**但 2x 是能稳定跑的** —— 由 cc-lib.mjs 的
+    // installHunter()（替换 <video>.playbackRate 访问器 + 原生 setter 每 300ms 压速）实现。
+    // Agent B 实测：180 秒墙钟推进 338 秒（1.87x），长段实速=2。所以这里把 2 也算作允许档。
+    ccjyxy:    [1, 1.25, 1.5, 2],
+    chaoxing:  [1, 1.25, 1.5],
+    shengsheng:[1, 1.25, 1.5, 2],
+    qiyang:    [1, 1.25, 1.5, 2],
+  };
+  /** 把"期望倍速"夹到平台允许的最高档（用户设 2x 但平台只有 1.5 时返回 1.5） */
+  function clampRate(want) {
+    const all = PLATFORM_RATES[PLATFORM];
+    if (!all || !all.length) return want;
+    if (all.indexOf(want) >= 0) return want;
+    let best = all[0];
+    for (const r of all) if (r <= want + 0.001) best = r;      // 不超过期望的最大档
+    return best;
+  }
+  /** 面板上显示用的倍速文案：**反映实际生效值**，和期望不符时标出来（用户 2026-10-16 要求） */
+  function rateLabel() {
+    const want = clampRate(effRate());
+    let actual = null;
+    try { const v = pickVideo(); if (v && v.playbackRate) actual = +v.playbackRate; } catch (_) { }
+    if (actual === null || !isFinite(actual)) return want + 'x';
+    const a = +actual.toFixed(2);
+    if (Math.abs(a - want) <= 0.02) return want + 'x';
+    return a + 'x（实际）';
   }
 
   /**
@@ -489,7 +529,21 @@
       const R = effRate();
       if (R && Math.abs((v.playbackRate || 1) - R) > 0.01) {
         v.playbackRate = R; state.video.rateFixes++; log('倍速→', R, why);
-      }
+        // ★ 平台不认这一档时【自动切回实际倍速】（用户 2026-10-16 要求"不许 UI 骗人"）：
+        //   连续 5 次都设不回期望值 → 判定平台不允许 → 把配置改成实际值，面板随之显示真实倍速。
+        //   实测依据：知到/长春/学习通站内只有 1.0/1.25/1.5 三档，设 2x 会被播放器悄悄改回。
+        state.video._rateFail = (state.video._rateFail || 0) + 1;
+        if (state.video._rateFail >= 5) {
+          const actual = +((v.playbackRate || 1).toFixed(2));
+          if (isFinite(actual) && actual > 0 && Math.abs(actual - R) > 0.01) {
+            CFG.rate = actual; CFG.userRate = true;
+            if (PLATFORM === 'qiyang') CFG.rateQiyang = actual; else CFG.rateShengsheng = actual;
+            saveCfg();
+            log('平台不接受 ' + R + 'x → 自动切回实际 ' + actual + 'x');
+          }
+          state.video._rateFail = 0;
+        }
+      } else { state.video._rateFail = 0; }
       if (CFG.autoPlay && v.paused && !v.ended) {
         try { const pr = v.play(); if (pr && typeof pr.catch === 'function') pr.catch(() => { state.video.resumed++; }); } catch (_) { }
       }
@@ -2308,7 +2362,7 @@
          <div style="opacity:.8">${vs}</div>
          <div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
            ${btn('toggle', CFG.enabled ? '暂停' : '启动')}
-           ${btn('rate', '倍速 ' + effRate() + 'x')}
+           ${btn('rate', '倍速 ' + rateLabel())}
            ${btn('quiz', '答题')}
            ${btn('next', '下一节')}
            ${btn('settings', '设置')}
@@ -2335,10 +2389,21 @@
             saveCfg();
           }
           if (a === 'rate') {
-            CFG.rate = effRate() >= 4 ? 1 : +(effRate() + 0.5).toFixed(1); CFG.userRate = true; saveCfg();
-            const v2 = pickVideo(); if (v2) v2.playbackRate = CFG.rate;
+            // ★ 按【平台允许的档位】循环（用户 2026-10-16 要求"为每个平台都做适配"）
+            //   旧写法是 +0.5 一路加到 4 再回 1 —— 在封顶 1.5 的平台上（知到/长春/学习通），
+            //   设 2 会被 effRate() 夹回 1.5，用户看到按钮"点了不动"，以为坏了。
+            const list = PLATFORM_RATES[PLATFORM] || [1, 1.25, 1.5, 2];
+            const cur0 = effRate();
+            let idx = list.indexOf(cur0);
+            if (idx < 0) { idx = list.length - 1; for (let k = 0; k < list.length; k++) if (list[k] <= cur0 + 0.001) idx = k; }
+            const next = list[(idx + 1) % list.length];
+            CFG.rate = next; CFG.userRate = true;
+            if (PLATFORM === 'qiyang') CFG.rateQiyang = next; else CFG.rateShengsheng = next;
+            saveCfg();
+            const v2 = pickVideo(); if (v2) v2.playbackRate = next;
             const p2 = P_ADAPTER && P_ADAPTER.player && P_ADAPTER.player();
-            if (p2 && typeof p2.setSpeed === 'function') { try { p2.setSpeed(CFG.rate); } catch (_) { } }
+            if (p2 && typeof p2.setSpeed === 'function') { try { p2.setSpeed(next); } catch (_) { } }
+            log('倍速按钮 → ' + next + 'x（本平台档位 ' + list.join('/') + '）');
           }
           if (a === 'quiz') { P_ADAPTER && P_ADAPTER.poll(); }
           if (a === 'next') { gotoNext('panel'); }
