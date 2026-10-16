@@ -21,7 +21,7 @@
         : /chaoxing\.com/i.test(HOST) ? 'chaoxing'
           : /ccjyxy\.cn/i.test(HOST) ? 'ccjyxy'
             : /zhihuishu\.com/i.test(HOST) ? 'zhihuishu' : 'unknown';
-  const PLATFORM_LABEL = { shengsheng: '心理学导论', qiyang: '职业培训', webtrn: '教师培训', chaoxing: '学习通', ccjyxy: '长春教师培训', zhihuishu: '智慧树知到', unknown: '未知平台' }[PLATFORM];
+  const PLATFORM_LABEL = { shengsheng: '生生课堂', qiyang: '职业培训', webtrn: '教师培训', chaoxing: '学习通', ccjyxy: '长春教师培训', zhihuishu: '智慧树知到', unknown: '未知平台' }[PLATFORM];
   const log = (...a) => console.log(NS, ...a);
   const warn = (...a) => console.warn(NS, ...a);
   const now = () => Date.now();
