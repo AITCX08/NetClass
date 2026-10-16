@@ -4,7 +4,7 @@
 ' 路径写死在这里，避免经 schtasks/Start-Process 传参时的引号嵌套地狱。
 Option Explicit
 Dim sh, repo, node, cmd
-repo = "C:\Users\Administrator\Desktop\Vibe\_opensource\artifacts\TaskMesh\netclass-20261013"
+repo = "C:\Users\Administrator\Desktop\Vibe\netclass"
 node = "C:\Coding\node\node.exe"
 cmd = """" & node & """ scripts/supervisor.mjs --interval=60"
 Set sh = CreateObject("WScript.Shell")

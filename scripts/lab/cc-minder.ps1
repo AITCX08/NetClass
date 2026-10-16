@@ -6,7 +6,7 @@
 # 用法: powershell -NoProfile -File scripts\cc-minder.ps1 -Hours 12
 param([int]$Hours = 12, [int]$Port = 9228, [string]$Tag = 'A')
 $ErrorActionPreference = 'SilentlyContinue'
-$repo = 'C:\Users\Administrator\Desktop\Vibe\_opensource\artifacts\TaskMesh\netclass-20261013'
+$repo = 'C:\Users\Administrator\Desktop\Vibe\netclass'
 Set-Location $repo
 $logf = "$repo\runs\cc-minder.log"
 
