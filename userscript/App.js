@@ -2347,7 +2347,7 @@
     panelEl.style.cssText = 'position:fixed;left:0;top:0;z-index:2147483646;'
       + 'font:12px/1.6 "Segoe UI",system-ui,"Microsoft YaHei",sans-serif;letter-spacing:.2px;'
       + 'background:' + C.bg + ';color:' + C.fg + ';border:1px solid ' + C.bd + ';border-radius:6px;'
-      + 'padding:9px 11px;min-width:214px;user-select:none';
+      + 'padding:9px 11px;width:340px;box-sizing:border-box;user-select:none';
     const draw = () => {
       if (!panelEl) return;
       const v = pickVideo();
