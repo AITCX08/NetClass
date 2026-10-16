@@ -137,18 +137,6 @@ for (;;) {
   for (const p of down) rebuildTunnel(p);
   if (down.length) await new Promise(r => setTimeout(r, 20000));   // 给隧道 20 秒起来
 
-  // ★ 窗口平铺巡检（2026-10-16 用户反馈"四个窗口又变到左上角了"）
-  //   根因：**浏览器一旦被重启**（计划任务 / 手动拉起 / 崩溃恢复），窗口就回到默认位置和尺寸 ——
-  //   知到那个浏览器被 `schtasks /Run /TN NetClassVis-zhihuishu` 重启后就跑了。
-  //   所以平铺**不能只做一次**，必须常驻巡检：不在位就摆回 2×2（960×510 @ 1920×1080）。
-  //   注意：必须用 CDP 的 Browser.setWindowBounds —— Win32 MoveWindow 在控制端找不到这些窗口。
-  if (!DRY) {
-    try {
-      const out = String(execFileSync('node', ['scripts/tile-check.mjs', '--quiet'],
-        { encoding: 'utf8', timeout: 40000, windowsHide: true }) || '').trim();
-      if (out && !out.includes('✅')) log('  ' + out);
-    } catch (_) { /* 窗口巡检失败不影响主流程 */ }
-  }
 
   const issues = [];
 
