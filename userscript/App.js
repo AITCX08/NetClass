@@ -2276,35 +2276,38 @@
   //   用户既不能主动收起，也不能主动展开。状态持久化，刷新/换页后保持一致。
   //   按钮带 data-nc-self，保证驱动器永远不会点到它（镜像 mountPanel 里的防误点约定）。
   const PANEL_COLLAPSED_KEY = 'netclass.panelCollapsed';
+  // ★ 收起/展开按钮（2026-10-16 用户要求"改为 +/− 号，放到窗口右上角"）
+  //   一个按钮常驻【真实窗口的右上角】：展开态显示 "−"（点它收起），收起态显示 "+"（点它展开）。
+  //   位置同样按 window.outerWidth 算 —— 视口被 Emulation 撑大时只有 outerW 是真实窗口宽度。
+  //   带 data-nc-self，保证驱动器不会误点到它。
   function applyPanelCollapsed() {
     let col = false;
     try { col = localStorage.getItem(PANEL_COLLAPSED_KEY) === '1'; } catch (_) { }
     const p = document.getElementById('netclass-panel');
-    let tab = document.getElementById('netclass-expand');
-    if (col) {
-      if (p) p.style.display = 'none';
-      if (!tab) {
-        tab = document.createElement('div');
-        tab.id = 'netclass-expand';
-        tab.setAttribute('data-nc-self', '1');
-        tab.style.cssText = 'position:fixed;left:0;top:0;z-index:2147483647;cursor:pointer;'
-          + 'background:#1d1712;color:#f0c674;border:1px solid #5a4a33;border-radius:6px;'
-          + 'padding:5px 9px;font:12px/1.2 system-ui,sans-serif;user-select:none;'
-          + 'box-shadow:0 2px 8px rgba(0,0,0,.45)';
-        tab.textContent = 'NetClass 展开';
-        tab.onclick = () => { try { localStorage.setItem(PANEL_COLLAPSED_KEY, '0'); } catch (_) { } applyPanelCollapsed(); };
-        (document.body || document.documentElement).appendChild(tab);
-      }
-      tab.style.display = '';
-      // 展开按钮也贴在真实窗口的右下角（比照 placePanel 的算法）
-      const tvw = window.outerWidth || window.innerWidth;
-      const tvh = window.outerHeight || window.innerHeight;
-      tab.style.left = Math.max(8, tvw - (tab.offsetWidth || 106) - 14) + 'px';
-      tab.style.top = Math.max(8, tvh - CHROME_ALLOWANCE - (tab.offsetHeight || 26) - 14) + 'px';
-    } else {
-      if (p) p.style.display = '';
-      if (tab) { try { tab.remove(); } catch (_) { } }
+    if (p) p.style.display = col ? 'none' : '';
+    let btn = document.getElementById('netclass-toggle');
+    if (!btn) {
+      btn = document.createElement('div');
+      btn.id = 'netclass-toggle';
+      btn.setAttribute('data-nc-self', '1');
+      btn.style.cssText = 'position:fixed;z-index:2147483647;cursor:pointer;'
+        + 'width:20px;height:20px;line-height:18px;text-align:center;font-weight:700;'
+        + 'background:rgba(29,23,18,.86);color:#f0c674;border:1px solid #5a4a33;border-radius:4px;'
+        + 'font-family:system-ui,sans-serif;font-size:14px;user-select:none;'
+        + 'box-shadow:0 1px 5px rgba(0,0,0,.4)';
+      btn.onclick = () => {
+        let now = false;
+        try { now = localStorage.getItem(PANEL_COLLAPSED_KEY) === '1'; } catch (_) { }
+        try { localStorage.setItem(PANEL_COLLAPSED_KEY, now ? '0' : '1'); } catch (_) { }
+        applyPanelCollapsed();
+      };
+      (document.body || document.documentElement).appendChild(btn);
     }
+    btn.textContent = col ? '+' : '−';
+    btn.title = col ? '展开 NetClass 面板' : '收起 NetClass 面板';
+    const vw = window.outerWidth || window.innerWidth;
+    btn.style.left = Math.max(8, vw - 20 - 8) + 'px';
+    btn.style.top = '6px';
   }
   function setPanelCollapsed(v) {
     try { localStorage.setItem(PANEL_COLLAPSED_KEY, v ? '1' : '0'); } catch (_) { }
