@@ -2198,6 +2198,41 @@
   try { window.NetClassSettings = { get: () => CFG, set: (k, v) => { CFG[k] = v; saveCfg(); syncCrossProcess(); }, mount: mountSettings }; } catch (_) { }
 
 
+  // ★ 面板「收起 / 展开」（2026-10-16 用户要求）
+  //   收起后【留一个可点的小按钮】，点它才展开 —— 旧实现是隐藏 8 秒后自动弹回，
+  //   用户既不能主动收起，也不能主动展开。状态持久化，刷新/换页后保持一致。
+  //   按钮带 data-nc-self，保证驱动器永远不会点到它（镜像 mountPanel 里的防误点约定）。
+  const PANEL_COLLAPSED_KEY = 'netclass.panelCollapsed';
+  function applyPanelCollapsed() {
+    let col = false;
+    try { col = localStorage.getItem(PANEL_COLLAPSED_KEY) === '1'; } catch (_) { }
+    const p = document.getElementById('netclass-panel');
+    let tab = document.getElementById('netclass-expand');
+    if (col) {
+      if (p) p.style.display = 'none';
+      if (!tab) {
+        tab = document.createElement('div');
+        tab.id = 'netclass-expand';
+        tab.setAttribute('data-nc-self', '1');
+        tab.style.cssText = 'position:fixed;left:12px;top:12px;z-index:2147483647;cursor:pointer;'
+          + 'background:#1d1712;color:#f0c674;border:1px solid #5a4a33;border-radius:6px;'
+          + 'padding:5px 9px;font:12px/1.2 system-ui,sans-serif;user-select:none;'
+          + 'box-shadow:0 2px 8px rgba(0,0,0,.45)';
+        tab.textContent = 'NetClass 展开';
+        tab.onclick = () => { try { localStorage.setItem(PANEL_COLLAPSED_KEY, '0'); } catch (_) { } applyPanelCollapsed(); };
+        (document.body || document.documentElement).appendChild(tab);
+      }
+      tab.style.display = '';
+    } else {
+      if (p) p.style.display = '';
+      if (tab) { try { tab.remove(); } catch (_) { } }
+    }
+  }
+  function setPanelCollapsed(v) {
+    try { localStorage.setItem(PANEL_COLLAPSED_KEY, v ? '1' : '0'); } catch (_) { }
+    applyPanelCollapsed();
+  }
+
   function mountPanel() {
     if (!CFG.panel || panelEl) return;
     // ★★ 智慧树反检测（2026-10-15 实测定位）：站点脚本会扫 DOM，**注入的面板本身**就会被判成
@@ -2217,7 +2252,13 @@
     panelEl.id = 'netclass-panel';
     // ── 视觉体系「夜航」：暖黑底 + 琥珀强调 + 细描边 + 无阴影（刻意区别于常见网课脚本的深蓝/墨绿圆角卡片）──
     const C = { bg: '#191512', bd: '#3a2f24', fg: '#f0e7db', mut: '#9b8d7c', accent: '#e0a253', ok: '#7fc08a' };
-    panelEl.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483646;'
+    // ★ 定位改到「左上角」（2026-10-16 用户反馈"看不见面板"）
+    //   根因：驱动器为了元素可点，会用 Emulation.setDeviceMetricsOverride 把页面视口撑大
+    //   （实测 9228 视口 1200x1000，而真实窗口只有 960x510）→ 锚定 right/bottom 的面板
+    //   会被挤到窗口外（面板落在 y=792~984，窗口只有 510 高，完全看不到）。
+    //   锚左上角则无论视口多大、窗口多小，都在可见区里。
+    //   折叠时不留空 —— 由 expandTab 提供展开按钮。
+    panelEl.style.cssText = 'position:fixed;left:12px;top:12px;z-index:2147483646;'
       + 'font:12px/1.6 "Segoe UI",system-ui,"Microsoft YaHei",sans-serif;letter-spacing:.2px;'
       + 'background:' + C.bg + ';color:' + C.fg + ';border:1px solid ' + C.bd + ';border-radius:6px;'
       + 'padding:9px 11px;min-width:214px;user-select:none';
@@ -2280,7 +2321,12 @@
           if (a === 'quiz') { P_ADAPTER && P_ADAPTER.poll(); }
           if (a === 'next') { gotoNext('panel'); }
           if (a === 'settings') { try { mountSettings(); } catch (e) { warn('设置面板打开失败', e); } }
-          if (a === 'hide') { panelEl.style.display = 'none'; setTimeout(() => { if (panelEl) panelEl.style.display = ''; }, 8000); }
+          // ★ 「收起」的新行为（2026-10-16 用户要求）：
+          //   旧实现是 display:none 后 8 秒自动弹回来 —— 用户既不能主动收起，也不能主动展开。
+          //   现在：收起后在左上角**留一个小的「展开」按钮**，点它才恢复；状态持久化到 localStorage，
+          //   刷新/换页后仍然是收起态（但展开按钮始终在，不会"找不回来"）。
+          if (a === 'hide') { setPanelCollapsed(true); }
+          if (a === 'unhide') { setPanelCollapsed(false); }
           draw();
         };
       });
@@ -2288,6 +2334,7 @@
     draw();
     timers.push(setInterval(draw, 2000));
     (document.body || document.documentElement).appendChild(panelEl);
+    applyPanelCollapsed();      // ★ 尊重上次的收起/展开状态（收起时留「展开」按钮）
   }
 
   // ------------------------------------------------------------ 启动
