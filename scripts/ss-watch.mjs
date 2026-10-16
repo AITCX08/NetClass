@@ -30,6 +30,10 @@ const getArg = (k, d) => {
 };
 const STALL = getArg('stall', 3);
 const INTERVAL = getArg('interval', 30);
+// ★ 自动停阈值（2026-10-16 用户要求"以后自动停看门狗"）：
+//   连续多少轮"无视频元素"就判定课程已学完 → 自行退出。
+//   默认 10 轮 × 30s ≈ 5 分钟（足够区分"真的学完了"和"页面刚好在跳转"）。
+const DONE_ROUNDS = getArg('done-rounds', 10);
 
 const { appendFileSync, mkdirSync } = await import('node:fs');
 mkdirSync('runs', { recursive: true });
@@ -84,8 +88,17 @@ for (;;) {
     try { if (c) c.close(); } catch (_) { }
     if (!d || d.cur === null) {
       log(key + ' [' + (d ? d.title : '?') + '] 无视频元素' + (d && d.errToast ? ' ⚠页面报错' : ''));
-      if (d && d.errToast) { st.stall++; } else { st.stall = 0; }
+      if (d && d.errToast) { st.stall++; st.doneRounds = 0; }
+      else {
+        // ★★ 自动停（2026-10-16 用户要求）：无视频【且无报错】→ 计一轮"空转"。
+        //   连续 DONE_ROUNDS 轮空转 = 这门课的视频已全部播完（实测：shengsheng 学完后
+        //   页面上就没有 <video> 了，看门狗会每 30s 白刷一次、日志一直被刷）。
+        //   注意：有 errToast 时不算空转（那是页面出错，要留给自愈逻辑处理）。
+        st.stall = 0;
+        st.doneRounds = (st.doneRounds || 0) + 1;
+      }
     } else {
+      st.doneRounds = 0;   // ★ 只要看到视频就清零 —— 说明还有得播，不能停
       const moving = st.lastCur !== null && d.cur > st.lastCur + 1;
       const atEnd = d.dur > 0 && d.cur >= d.dur - 2;
 
@@ -129,5 +142,15 @@ for (;;) {
       st.lastCur = d.cur;
     }
   }
+
+  // ★★ 自动停（2026-10-16 用户要求）：所有标签都连续 DONE_ROUNDS 轮没有可播视频
+  //   → 判定【课程已全部学完】，看门狗自己退出（不再每 30s 白刷）。
+  //   退出后由主管（supervisor.mjs）的"只监视不启动"策略接管 —— 不会又被拉起来。
+  if (ts.length && ts.every(p => ((state[p.id] || {}).doneRounds || 0) >= DONE_ROUNDS)) {
+    log('=== 所有标签连续 ' + DONE_ROUNDS + ' 轮无可播视频（约 ' +
+      Math.round(DONE_ROUNDS * INTERVAL / 60) + ' 分钟）→ 判定课程已完成，看门狗自动退出 ===');
+    process.exit(0);
+  }
+
   await new Promise(r => setTimeout(r, INTERVAL * 1000));
 }

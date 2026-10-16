@@ -79,7 +79,10 @@ async function portHasPage(port) {
 
 // 监管清单：name / 进程匹配 / 是否必须唯一 / 启动参数 / 日志
 const TARGETS = [
-  { name: 'ss看门狗', match: 'ss-watch\\.mjs', uniq: true, args: ['scripts/ss-watch.mjs', '--stall=3', '--interval=30'], out: 'runs/ss-watch-console.log', err: 'runs/ss-watch.err.log' },
+  // ★ watchOnly（2026-10-16）：ss-watch 现在会【自行退出】—— 连续 5 分钟没有可播视频
+  //   就判定课程已学完（见 ss-watch.mjs 的 DONE_ROUNDS）。所以主管只监视、不再拉起，
+  //   否则它刚退出就被重启，等于白改。课程又有新视频时，手动起一次即可。
+  { name: 'ss看门狗', match: 'ss-watch\\.mjs', uniq: true, args: ['scripts/ss-watch.mjs', '--stall=3', '--interval=30'], out: 'runs/ss-watch-console.log', err: 'runs/ss-watch.err.log', watchOnly: true },
   { name: '提交看门狗', match: 'cx-submit-watch\\.mjs', uniq: true, args: ['scripts/cx-submit-watch.mjs', '--interval=30'], out: 'runs/cx-submit-watch-console.log', err: 'runs/cx-submit-watch.err.log' , watchOnly: true },
   { name: '进度记录', match: 'progress-report\\.mjs', uniq: true, args: ['scripts/progress-report.mjs', '--every=300'], out: 'runs/progress-console.log', err: 'runs/progress.err.log' },
   // 长春驱动归 Agent B 独占（9228 同时只能一个会话，多开必 423 Locked）。
