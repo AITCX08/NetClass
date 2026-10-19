@@ -30,7 +30,7 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import * as registry from './registry.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -186,9 +186,104 @@ export function alerts(t, d) {
   return out;
 }
 
-// ── 主循环（只读）──────────────────────────────────
-export async function run({ interval = 30, once = false } = {}) {
-  log('=== orchestrator v1 启动（只读模式：不 spawn / 不 kill / 不改 state）===');
+// ── 编排：起停驱动（★ 四道保险，宁可不动也不误伤）──────────
+/**
+ * 保险 1：**绝不 kill 任何进程**。v1 只做「没在跑就拉起来」，不做「在跑就杀掉」。
+ *         （我今天就是因为杀 supervisor 把整条链弄断过一次；在跑的东西一律不碰。）
+ * 保险 2：**平台上只要有该平台的驱动在跑，就只观察不动作**。
+ * 保险 3：**只处理 state=queued 且 needsConfirm=false 且 confirmed=true（或无需确认）的任务**。
+ * 保险 4：**必须显式 --yes 才启用**，否则 manage 模式等同只读。
+ */
+const MANAGE = { enabled: false, yes: false };
+
+/** 排班：该平台现在能不能起驱动 */
+function slotFree(t, procs) {
+  const reg = registry.find(t.platform);
+  if (!reg) return { free: false, why: '平台不在注册表' };
+  const drv = reg.driver && reg.driver.script;
+  if (!drv) return { free: false, why: '该平台无 Node 驱动（driver.script=null）' };
+  // ★ 保险 2：有驱动在跑 → 绝不插手
+  const running = procs.find(p => p.cmd.includes(drv));
+  if (running) return { free: false, why: `驱动已在跑（pid=${running.pid}）→ 只观察` };
+  if (reg.driver.singleton && /(cc-|cx-|ss-|zhs-)/.test(drv)) {
+    // singleton 平台：再确认没有"同平台其它脚本"占着
+    const others = procs.filter(p => p.cmd.includes('cc-') || p.cmd.includes('cx-') || p.cmd.includes('ss-'));
+    const same = others.find(p => {
+      const byCdp = registry.byCdp(reg.cdp);
+      return p.cmd.includes(String(reg.cdp));
+    });
+    if (same) return { free: false, why: `同平台其它脚本在跑（pid=${same.pid}）→ 只观察` };
+  }
+  return { free: true, why: '无驱动在跑，可起' };
+}
+
+/** 起驱动（只 spawn，不 kill） */
+function startDriver(t) {
+  const reg = registry.get(t.platform);
+  const drv = reg.driver && reg.driver.script;
+  if (!drv) return { ok: false, why: '无驱动脚本' };
+  const args = (reg.driver.args || []).map(a => String(a).replace('{cdp}', String(reg.cdp)));
+  try {
+    const child = spawn(process.execPath, [join(ROOT, 'scripts', drv), ...args], {
+      cwd: ROOT, windowsHide: true, stdio: 'ignore', detached: true,
+    });
+    child.unref();
+    log(`🚀 [manage] 起驱动 ${drv} ${args.join(' ')} → pid=${child.pid}`);
+    t.driver = t.driver || {};
+    t.driver.pid = child.pid;
+    t.driver.startedAt = now();
+    return { ok: true, pid: child.pid };
+  } catch (e) {
+    log(`❌ [manage] 起驱动失败：${e.message}`);
+    return { ok: false, why: e.message };
+  }
+}
+
+/**
+ * manage 模式的一轮：只处理 queued 任务，且只 spawn
+ * @returns {{acted:boolean, why:string}}
+ */
+function tickManage(t, procs) {
+  if (!MANAGE.enabled) return { acted: false, why: 'manage 未启用（只读）' };
+  if (!MANAGE.yes) return { acted: false, why: 'manage 需要 --yes 显式确认' };
+  // 保险 3：只处理 queued 且已确认的
+  if (t.state !== 'queued') return { acted: false, why: `state=${t.state}，不是 queued` };
+  if (t.needsConfirm && !t.confirmed) return { acted: false, why: 'needsConfirm 且未 confirmed' };
+
+  const slot = slotFree(t, procs);
+  if (!slot.free) return { acted: false, why: slot.why };   // 保险 2
+
+  // 目标已达成就不起
+  const prog = readProgress(t.platform);
+  const goal = t.target?.goal?.value;
+  if (prog.ok && goal != null && prog.now >= goal) {
+    t.state = 'done';
+    t.result = { ...(t.result || {}), ok: true, achieved: prog.now, notes: '目标已达成，无需起驱动' };
+    t.stateHistory = [...(t.stateHistory || []), { at: now(), from: 'queued', to: 'done', by: 'orchestrator.manage' }];
+    log(`✅ [manage] [${t.id}] 目标已达成（${prog.now}/${goal}）→ 直接置 done，不起驱动`);
+    return { acted: true, why: 'already-reached' };
+  }
+
+  // 起驱动
+  const r = startDriver(t);
+  if (r.ok) {
+    t.state = 'running';
+    t.progress = t.progress || {};
+    t.progress.startedAt = t.progress.startedAt || now();
+    t.stateHistory = [...(t.stateHistory || []), { at: now(), from: 'queued', to: 'running', by: 'orchestrator.manage' }];
+    return { acted: true, why: `spawned pid=${r.pid}` };
+  }
+  return { acted: false, why: r.why };
+}
+
+
+export async function run({ interval = 30, once = false, manage = false, yes = false } = {}) {
+  MANAGE.enabled = !!manage;
+  MANAGE.yes = !!yes;
+  const modeTxt = MANAGE.enabled
+    ? (MANAGE.yes ? '★ manage（会起驱动，但绝不 kill）' : 'manage 但缺 --yes → 等同只读')
+    : '只读（不 spawn / 不 kill / 不改 state）';
+  log(`=== orchestrator v1 启动：${modeTxt} ===`);
   const v = registry.validate();
   log(`注册表校验：${v.ok ? '✅ 通过' : '❌ 失败'}（${registry.keys().length} 平台）`);
   if (!v.ok) { v.errors.forEach(e => log('  ✗ ' + e)); }
@@ -206,6 +301,17 @@ export async function run({ interval = 30, once = false } = {}) {
       t._observed = d.observed;
       t._alerts = al;
       t._hist = [...(t._hist || []).slice(-20), { at: now(), now: d.observed.progress?.now ?? null }];
+
+      // ★ 编排（只有 manage+yes 才会真的动作，且只 spawn 不 kill）
+      let actTxt = '';
+      if (MANAGE.enabled) {
+        try {
+          const a = tickManage(t, procs);
+          if (a.acted) actTxt = ` · 🔧 已动作：${a.why}`;
+          else if (a.why && a.why !== 'manage 未启用（只读）') actTxt = ` · 未动作：${a.why}`;
+        } catch (e) { actTxt = ` · ⚠ 编排异常：${e.message}`; }
+      }
+
       saveTask(t);
       // ★ 日志里带上进度与分类达标情况（比只说"驱动在跑"有用得多）
       const pr = d.observed.progress || {};
@@ -213,7 +319,7 @@ export async function run({ interval = 30, once = false } = {}) {
         ? ` · 学时 ${pr.now}/${pr.goal}` + (pr.staleMin != null && pr.staleMin >= 10 ? `(缓存${pr.staleMin}min)` : '')
           + (pr.cats ? ' · ' + pr.cats.map(c => `${c.key || ('cat' + c.idx)} ${c.done}/${c.target}${c.met ? '✅' : ''}`).join(' | ') : '')
         : ` · 进度不可读（${pr.reason || '未知'}）`;
-      log(`[${t.id}] ${t.platform}/${t.taskType} → 推导=${d.derived}（${d.why}）${prTxt}` + (al.length ? ` ⚠ ${al.join('；')}` : ''));
+      log(`[${t.id}] ${t.platform}/${t.taskType} → 推导=${d.derived}（${d.why}）${prTxt}` + (al.length ? ` ⚠ ${al.join('；')}` : '') + actTxt);
     }
     if (once) return;
     await sleep(interval * 1000);
@@ -288,7 +394,10 @@ if (isMain) {
     } else if (cmd === 'tick') {
       await run({ once: true });
     } else if (cmd === 'run') {
-      await run({ interval: Number(flag('interval', 30)), once: argv.includes('--once') });
+      const manage = argv.includes('--manage');
+      const yes = argv.includes('--yes');
+      if (manage && !yes) console.log('⚠ --manage 已指定但缺 --yes → 本次等同只读（保险 4）');
+      await run({ interval: Number(flag('interval', 30)), once: argv.includes('--once'), manage, yes });
     } else if (cmd === 'submit') {
       const raw = argv.includes('--file') ? readFileSync(flag('file'), 'utf8') : argv[0];
       const t = submit(JSON.parse(raw));
