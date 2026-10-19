@@ -229,8 +229,8 @@
       ]
     },
     "auth": {
-      "loginUrl": null,
-      "probe": null,
+      "loginUrl": "https://passport2.chaoxing.com/login",
+      "probe": "(function(){var p=(location.pathname||'')+(location.search||'');if(/passport|login/i.test(p)) return false;if(document.querySelector('input[type=password],#pwd')) return false;if(document.querySelector('#phone') && document.querySelector('#loginBtn')) return false;var t=document.body?document.body.innerText:'';var hasContent=/(我的课程|我学的课|课程|章节|任务点|待办|学习通)/.test((t||'').slice(0,3000));var hasUser=!!document.querySelector('[class*=userName],[class*=nickName],[class*=avatar],[class*=personInfo],[class*=headPic]');return hasContent || hasUser;})()",
       "fields": {
         "user": "#phone",
         "pass": "#pwd",
@@ -239,7 +239,8 @@
       "captcha": "image",
       "sessionModel": "persistentProfile",
       "_probeUnverified": true,
-      "note": "登录页 URL 本仓库未记录（scripts/lab/cx-login.mjs 只操作「已经在登录页」的标签）；字段选择器来自该脚本。出现滑块/图形码应停手转人工。"
+      "note": "登录页 URL 本仓库未记录（scripts/lab/cx-login.mjs 只操作「已经在登录页」的标签）；字段选择器来自该脚本。出现滑块/图形码应停手转人工。",
+      "_probeWhy": "本机 9227 隧道通但学习通浏览器未开（用户要求暂停），无法实测。probe 复用 App.js ADAPTER_CHAOXING.pageKind() 的 /passport|login/i 判据 + 密码框/登录字段排除 + 内容特征正向判定；loginUrl 由 #phone/#pwd/#loginBtn 三个字段选择器推断为 passport2 标准登录页。浏览器下次打开后请跑 `node scripts/auth.mjs probe --platform chaoxing` 复核，通过则删掉 _probeUnverified。"
     },
     "heal": {
       "resetOnStall": [],
