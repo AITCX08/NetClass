@@ -105,8 +105,28 @@ function runDriver(cat) {
     saveState({ cat, pid: child.pid, phase: 'running' });
     const t0 = Date.now();
     let done = false;
+    /* ★★ 2026-10-19 修 Bug2（"分类1 早达标了却一直不切"）：
+     *   旧逻辑只在**驱动退出之后**才重新读学时 → 驱动若在某个分类里原地打转永不退出，
+     *   主管就永远拿不到轮转时机（实测 cat=1 15.7/15 已达标、却还在跑 cat=1 的死循环）。
+     *   现在：驱动**运行中**也每 2 分钟读一次学时缓存（cc-auto 每次停在培训页都会刷新它），
+     *   一旦当前分类达标 → 主动收掉驱动 → 进入下一轮换分类。
+     *   注：缓存里的学时是"下界"（平台学时单调递增），所以"缓存说达标"一定仍然达标，切走是安全的。 */
+    const watch = setInterval(async () => {
+      if (done) return;
+      try {
+        const sc = readStatsCache(20 * 60 * 1000);
+        if (!sc || !sc.cats) return;
+        const s = sc.cats.find(x => x.cat === cat);
+        if (s && s.done !== null && s.target !== null && s.done >= s.target) {
+          log('✔ 分类' + cat + '(' + CATNAMES[cat] + ') 运行中已达标 ' + s.done + '/' + s.target + ' → 收掉本驱动，换下一个分类');
+          try { child.kill('SIGKILL'); } catch (_) { }
+          finish(-3, 'cat-done');
+        }
+      } catch (_) { }
+    }, 120000);
     const finish = (code, why) => {
       if (done) return; done = true;
+      try { clearInterval(watch); } catch (_) { }
       const secs = Math.round((Date.now() - t0) / 1000);
       log('■ 驱动退出 code=' + code + ' 跑了 ' + secs + 's（' + why + '）');
       resolve({ code, secs, why });
