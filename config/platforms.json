@@ -1,19 +1,25 @@
 {
   "_meta": {
     "version": 1,
-    "updatedAt": "2026-10-19T10:10:00+08:00",
-    "note": "数据驱动的平台注册表。加平台 = 在这里加一个块，不用改代码。字段含义见 docs/AGENT-ARCHITECTURE.md §2。",
+    "updatedAt": "2026-10-19T10:20:00+08:00",
+    "doc": "docs/AGENT-ARCHITECTURE.md §2",
+    "note": "数据驱动的平台注册表。加平台 = 这里加一个块，不改代码。P0 阶段只做「抽数据」，行为与 scripts/supervisor.mjs 原有硬编码逐字一致（args/日志路径/顺序全部照抄）。",
     "conventions": {
-      "{cdp}": "占位符，运行时会替换成该平台的 cdp 端口",
-      "_probeUnverified": "该字段未实测验证，注册表校验会警告但不报错",
-      "host": "用于 byHost() 反查；不确定就填最稳定的主域"
+      "{cdp}": "占位符，运行时替换成该平台的 cdp 端口",
+      "supervise.order": "supervisor 每轮遍历顺序（数值小的先处理，决定日志里「修复: …」的先后）；缺省 1000",
+      "supervise.match": "枚举进程用的正则（对 node.exe 的 CommandLine 做 -match）",
+      "watchOnly": "只监视不拉起（进程自己会退出 / 用户要求暂停）",
+      "watchNote": "watchOnly 缺进程时日志里的括号说明（缺省「只监视不启动」）",
+      "_probeUnverified": "该平台的 auth.probe 等字段未实测验证；validate() 会警告",
+      "verified": "completion 判据最后一次实测日期（null = 未复测）"
     },
     "global": [
       {
         "name": "进度记录",
         "match": "progress-report\\.mjs",
-        "args": ["scripts/progress-report.mjs", "--every=300"],
+        "order": 30,
         "uniq": true,
+        "args": ["scripts/progress-report.mjs", "--every=300"],
         "out": "runs/progress-console.log",
         "err": "runs/progress.err.log"
       }
@@ -24,175 +30,197 @@
     "label": "长春教师培训",
     "host": "col.ccjyxy.cn",
     "cdp": 9228,
+    "tunnel": { "target": "WJX@192.168.1.8", "remoteHost": "127.0.0.1", "remotePort": 9228 },
     "capabilities": ["video"],
     "driver": {
       "script": "cc-cycle.mjs",
       "args": ["--port", "{cdp}", "--tab", "0"],
       "singleton": true,
       "out": "runs/cc-cycle-console.log",
-      "err": "runs/cc-cycle.err.log"
+      "err": "runs/cc-cycle.err.log",
+      "supervise": { "name": "长春轮转", "match": "cc-cycle\\.mjs", "order": 40, "uniq": true },
+      "inner": {
+        "script": "cc-auto.mjs",
+        "args": ["--port", "{cdp}", "--tab", "0", "--cat={cat}", "--tag", "t0"],
+        "note": "cc-cycle 每个分类串行拉一个 cc-auto（cat=0/1/2），不能并发（同账号第二个播放页 → 423 Locked）"
+      }
     },
     "watchers": [
       {
         "script": "cc-watch.mjs",
         "args": ["--port", "{cdp}", "--every=180"],
-        "uniq": true,
         "readOnly": true,
         "out": "runs/cc-watch-console.log",
-        "err": "runs/cc-watch.err.log"
+        "err": "runs/cc-watch.err.log",
+        "supervise": { "name": "长春看护", "match": "cc-watch\\.mjs", "order": 50, "uniq": true }
       }
     ],
     "categories": [
       { "key": "小初高公需", "goal": 30 },
       { "key": "初中学段通识", "goal": 15 },
-      { "key": "专业课-初中数学", "goal": 45 }
+      { "key": "专业课-初中数学", "goal": 45, "pageTitleHint": "初中数学" }
     ],
     "completion": {
       "kind": "pageText",
       "scope": "trainingPage",
       "pattern": "已修\\s*([\\d.]+)\\s*/\\s*达标\\s*(\\d+)\\s*学时",
-      "perCategoryPattern": "已修\\s*([\\d.]+)\\s*/\\s*达标\\s*(\\d+)\\s*学时\\s*·\\s*完成\\s*(\\d+)\\s*门",
+      "perCategoryPattern": "([\\d.]+)\\s*/\\s*达标\\s*(\\d+)\\s*学时",
       "verified": "2026-10-19",
-      "verifiedNote": "平台只在课程结束回培训页时刷新；分类明细需逐标签试读（见 cc-lib.readCcStats）"
+      "verifiedNote": "口径即 cc-lib.readCcStats 的生产正则；2026-10-19 现场读到 71.1/90 与三分类明细。分类明细只在停在培训页时存在（播放器页/课程页读不到）。"
     },
     "constraints": {
       "maxParallel": 1,
       "creditsPerHour": 2.1,
       "accountingMaxRate": 1.25,
+      "rateMax": 2,
       "hardConstraints": [
-        "单会话硬保护：同账号第二个播放页 → 旧页「本播放页已停止」+ report 接口 423 Locked",
-        "MUI/React 按钮不响应合成 click()，必须 CDP 真鼠标事件",
-        "记账硬卡 1.25x，播 2x 会有缺口，靠重播补录",
-        "服务端钳位 position_sec，改 currentTime 跳不过去",
-        "MUI Accordion 手风琴：展开一个分类，另外两个从 DOM 消失 → 必须一个分类一个进程"
+        "单会话硬保护：同账号第二个播放页 → report 接口 423 Locked",
+        "平台记账上限约 1.25x，播 2x 会有账差，靠重播补录（实测 wall 2x、实速 ~1.95）",
+        "MUI/React 按钮不吃合成 click()，要 CDP 真鼠标事件",
+        "MUI Accordion：展开一个分类另两个折叠（宽 0）→ 必须一个分类一个进程"
       ]
     },
     "auth": {
       "loginUrl": "https://col.ccjyxy.cn/",
-      "probe": "location.href.indexOf('login')<0 && !/登录/.test(document.title)",
+      "probe": "(function(){return !!localStorage.getItem('access_token') && location.href.indexOf('login')<0})()",
       "fields": null,
       "captcha": "none",
       "sessionModel": "persistentProfile",
-      "_note": "靠浏览器持久 profile 的 cookie；profile 丢/换机器要人工登录一次"
+      "probeVerified": "2026-10-19",
+      "probeNote": "9228 三个标签上实测：token=true / url 无 login / 无 password 输入框；对照未登录时应为 false"
     },
-    "heal": {
-      "resetOnStall": ["runs/cc-skip.json", "runs/cc-claim.json"],
-      "restartDriverOnStall": true
-    }
+    "heal": { "resetOnStall": ["runs/cc-skip.json", "runs/cc-claim.json"], "restartDriverOnStall": true },
+    "_sources": ["scripts/cc-cycle.mjs", "scripts/cc-lib.mjs:29-82", "scripts/supervisor.mjs:81-96", "docs/HANDOVER.md §5.41/§6", "docs/AGENT-ARCHITECTURE.md §2"]
   },
 
   "chaoxing": {
-    "label": "学习通",
+    "label": "学习通（超星）",
     "host": "mooc1.chaoxing.com",
     "cdp": 9227,
+    "tunnel": { "target": "WJX@192.168.1.8", "remoteHost": "127.0.0.1", "remotePort": 9227 },
     "capabilities": ["video", "quiz"],
     "driver": {
       "script": "cx-auto.mjs",
       "args": ["--port", "{cdp}", "--secs", "10", "--maxmins", "400"],
       "singleton": true,
       "watchOnly": true,
+      "watchNote": "已按用户要求暂停学习通处理",
       "out": "runs/cx-driver.out.log",
       "err": "runs/cx-driver.err.log",
-      "_watchOnlyNote": "用户明确要求暂停学习通处理 → 只监视不启动"
+      "supervise": { "name": "学习通驱动", "match": "cx-auto\\.mjs --port", "order": 60, "uniq": true },
+      "note": "watchOnly：用户明确要求暂停学习通，主管只监视不拉起"
     },
     "watchers": [
       {
         "script": "cx-submit-watch.mjs",
         "args": ["--interval=30"],
-        "uniq": true,
         "readOnly": true,
         "watchOnly": true,
+        "watchNote": "已按用户要求暂停学习通处理",
         "out": "runs/cx-submit-watch-console.log",
-        "err": "runs/cx-submit-watch.err.log"
+        "err": "runs/cx-submit-watch.err.log",
+        "supervise": { "name": "提交看门狗", "match": "cx-submit-watch\\.mjs", "order": 20, "uniq": true },
+        "note": "章测试答完不自动提交 → 独立看门狗兜提交（checked>0 且 pending 才点）"
       }
     ],
     "categories": null,
     "completion": {
       "kind": "domClass",
       "scope": "coursePage",
-      "pattern": "span.roundpoint.blue",
+      "pattern": "span.roundpoint",
+      "classes": { "done": "blue", "todo": "orange01|jobCount" },
       "verified": "2026-10-16",
-      "verifiedNote": "jobUnfinishCount 有 59 个元素但值全空，不可用；只认 roundpoint 类名（blue=已完成 / orange01 jobCount=未完成）"
+      "verifiedNote": "口径来自 progress-report.mjs 的 CX_EXPR（生产在跑）；本次 P0 复核时 9227 隧道不通，未现场复测。jobUnfinishCount 全空不可用。"
     },
     "constraints": {
       "maxParallel": 1,
-      "creditsPerHour": 2.0,
+      "creditsPerHour": null,
       "accountingMaxRate": 1.5,
+      "rateMax": 1.5,
       "hardConstraints": [
-        "禁 Emulation.setDeviceMetricsOverride —— 改设备指标 = 改指纹，实测触发风控 detect.chaoxing.com",
-        "测验页在 3 层 iframe 内"
+        "禁 Emulation.setDeviceMetricsOverride（改设备指标=改指纹，实测触发 detect.chaoxing.com 风控）",
+        "章测试在 3 层嵌套 iframe 内",
+        "站点 ratechange 后同 tick 写回 1x → 必须实例级 defineProperty 压速率（wallRate≈1.499）"
       ]
     },
     "auth": {
-      "loginUrl": "https://passport2.chaoxing.com/login",
+      "loginUrl": null,
       "probe": null,
-      "fields": null,
+      "fields": { "user": "#phone", "pass": "#pwd", "submit": "#loginBtn" },
       "captcha": "image",
       "sessionModel": "persistentProfile",
-      "_probeUnverified": true
+      "_probeUnverified": true,
+      "note": "登录页 URL 本仓库未记录（scripts/lab/cx-login.mjs 只操作「已经在登录页」的标签）；字段选择器来自该脚本。出现滑块/图形码应停手转人工。"
     },
-    "heal": {
-      "resetOnStall": [],
-      "restartDriverOnStall": false
-    }
+    "heal": { "resetOnStall": [], "restartDriverOnStall": false },
+    "_probeUnverified": true,
+    "_unverified": ["auth.loginUrl", "auth.probe", "completion（本次未现场复测）"],
+    "_sources": ["scripts/cx-auto.mjs:36-39", "scripts/cx-submit-watch.mjs:20-23", "scripts/lab/cx-login.mjs:29-37", "scripts/progress-report.mjs:57-67", "scripts/supervisor.mjs:86,95"]
   },
 
   "shengsheng": {
     "label": "生生课堂",
     "host": "edu.shengshengketang.com",
     "cdp": 9224,
+    "tunnel": { "target": "WJX@192.168.1.8", "remoteHost": "127.0.0.1", "remotePort": 9224 },
     "capabilities": ["video", "quiz"],
     "driver": {
       "script": "ss-watch.mjs",
       "args": ["--stall=3", "--interval=30"],
       "singleton": true,
       "watchOnly": true,
+      "watchNote": "已按用户要求暂停学习通处理",
       "out": "runs/ss-watch-console.log",
       "err": "runs/ss-watch.err.log",
-      "_watchOnlyNote": "ss-watch 会自行退出（连续 5 分钟无可播视频 = 课程学完），主管只监视不再拉起"
+      "supervise": { "name": "ss看门狗", "match": "ss-watch\\.mjs", "order": 10, "uniq": true },
+      "note": "ss-watch 会自行退出（连续 5 分钟无可播视频 = 判学完，DONE_ROUNDS=10×30s），所以主管只监视不再拉起；watchNote 沿用上线时文案（历史日志可对比）",
+      "portNote": "ss-watch.mjs 内 const P = 9224 写死，不接受 --port"
     },
     "watchers": [],
     "categories": null,
     "completion": {
-      "kind": "pageText",
+      "kind": "domAbsent",
       "scope": "coursePage",
-      "pattern": "已完成",
+      "pattern": "video",
       "verified": "2026-10-16",
-      "verifiedNote": "视频全部看完后页面无 <video> 元素；ss-watch 以此判定学完并自行退出"
+      "verifiedNote": "ss-watch.mjs:33-36 DONE_ROUNDS：连续 10 轮（约 5 分钟）页面无 <video> 判学完并自行退出（课程学完后 vue 页面确实没有 video 元素）"
     },
     "constraints": {
       "maxParallel": 2,
-      "creditsPerHour": 2.0,
-      "accountingMaxRate": 2,
+      "creditsPerHour": null,
+      "accountingMaxRate": 1.5,
+      "rateMax": 1.5,
       "hardConstraints": [
+        "MSE blob 流失效只能 Page.reload 救，禁止 video.load()（会清掉 SourceBuffer）",
+        "站点倍速菜单只有 1x/1.25x/1.5x（1.5x 即它的上限；属性可设 8x 但吞吐 6x 封顶反而更慢）",
         "实测 2 路并行都稳在 1.5x，后台标签不被节流"
       ]
     },
     "auth": {
       "loginUrl": "https://edu.shengshengketang.com/",
-      "probe": null,
+      "probe": "(function(){var t=document.body.innerText||'';return /学号[:：]\\s*\\S+/.test(t) && location.href.indexOf('login')<0})()",
       "fields": null,
       "captcha": "none",
       "sessionModel": "persistentProfile",
-      "_probeUnverified": true
+      "probeVerified": "2026-10-19",
+      "probeNote": "9224 两个 /home 标签实测：正文含「袁莹 学号：SN2630030841 机构：…」/ url 无 login / 无 password 输入框"
     },
-    "heal": {
-      "resetOnStall": [],
-      "restartDriverOnStall": false
-    }
+    "heal": { "resetOnStall": [], "restartDriverOnStall": false },
+    "_sources": ["scripts/ss-watch.mjs:18-36", "docs/HANDOVER.md §6.1/§5.31/§5.41", "scripts/supervisor.mjs:85"]
   },
 
   "zhihuishu": {
     "label": "智慧树知到",
-    "host": "hike.zhihuishu.com",
+    "host": "studyvideoh5.zhihuishu.com",
     "cdp": 9229,
+    "tunnel": { "target": "WJX@192.168.1.8", "remoteHost": "127.0.0.1", "remotePort": 9229 },
     "capabilities": ["video", "quiz", "homework", "exam"],
     "driver": {
-      "script": "zhs-quiz.mjs",
-      "args": ["--port", "{cdp}", "--play", "1", "--secs", "200"],
+      "script": null,
+      "args": [],
       "singleton": true,
-      "watchOnly": true,
-      "_watchOnlyNote": "驱动在 runs/ 下（非 scripts/），且需按任务类型分别起（zhs-quiz / zhs-exam）"
+      "note": "无 Node 长跑驱动：由页面内模块（userscript/App.js 的 zhihuishu 适配器）驱动；辅助脚本 runs/zhs-run.mjs（保持播放）、runs/zhs-quiz.mjs（弹题）、runs/zhs-exam.mjs（作业/考试）按需手动起",
+      "helpers": ["runs/zhs-run.mjs", "runs/zhs-watch.mjs", "runs/zhs-quiz.mjs", "runs/zhs-exam.mjs"]
     },
     "watchers": [],
     "categories": null,
@@ -202,76 +230,126 @@
       "endpoint": "POST learning/queryStuyInfo",
       "pattern": "watchState===1",
       "verified": "2026-10-15",
-      "verifiedNote": "DOM 里的 ✓ 在 73 个小节上完全一致（数不出来），只能用接口"
+      "verifiedNote": "DOM 里的 ✓ 在 73 个小节上完全一致（数出来永远 73/73），只能认接口的 watchState（docs/HANDOVER.md:173）"
     },
     "constraints": {
       "maxParallel": 1,
-      "creditsPerHour": 2.0,
+      "creditsPerHour": null,
       "accountingMaxRate": 1.5,
+      "rateMax": 1.5,
       "hardConstraints": [
-        "站点检测 isNative(XMLHttpRequest) && isNative(XHR.prototype.open) && !window['OCS'] && isNative(Element.prototype.addEventListener)",
-        "元素级 !e.isTrusted → 必须 CDP 真鼠标事件",
-        "考试页有 CSP（connect-src 'self'）→ 页面内问不了 LLM，答案必须由 PC 侧驱动提供"
+        "站点检测 isNative(XHR.prototype.open) + 元素级 !e.isTrusted → 只包 send、点击一律 CDP 真鼠标",
+        "考试页 CSP connect-src 'self' → 页面内问不了 LLM，答案必须 PC 侧给",
+        "倍速只有 1.0/1.25/1.5 且必须走站点 UI"
       ]
     },
     "auth": {
-      "loginUrl": "https://passport.zhihuishu.com/login",
+      "loginUrl": "https://login.zhihuishu.com/?origin=zhs",
       "probe": null,
       "fields": null,
       "captcha": "image",
       "sessionModel": "persistentProfile",
-      "_probeUnverified": true
+      "_probeUnverified": true,
+      "note": "2026-10-15 批量关标签导致登录态丢失，需人工登录一次（docs/HANDOVER.md §5.52）；9229 当前隧道不通，本次未实测 probe"
     },
-    "heal": {
-      "resetOnStall": [],
-      "restartDriverOnStall": false
-    }
+    "heal": { "resetOnStall": [], "restartDriverOnStall": false },
+    "_probeUnverified": true,
+    "_unverified": ["auth.probe", "completion（2026-10-15 记录，未复测）"],
+    "_sources": ["docs/HANDOVER.md:173,214,935", "docs/FINAL-HANDOVER.md:33,75-80", "runs/zhs-run.mjs", "runs/zhs-watch.mjs"]
   },
 
   "qiyang": {
-    "label": "职业培训（齐阳）",
+    "label": "齐阳培训",
     "host": "study.bjqiyang.com",
     "cdp": 9225,
+    "tunnel": { "target": "WJX@192.168.1.8", "remoteHost": "127.0.0.1", "remotePort": 9225 },
     "capabilities": ["video"],
     "driver": {
-      "script": "ss-watch.mjs",
-      "args": ["--stall=3", "--interval=30"],
+      "script": null,
+      "args": [],
       "singleton": true,
-      "watchOnly": true
+      "note": "无 Node 驱动：页面内模块（userscript/App.js 的 qiyang 适配器）驱动；scripts/lab/qy-watch.mjs 只做观测（--rounds 有限）",
+      "helpers": ["scripts/lab/qy-watch.mjs"]
     },
     "watchers": [],
     "categories": null,
-    "completion": { "kind": "pageText", "scope": "coursePage", "pattern": "已完成", "verified": null },
-    "constraints": { "maxParallel": 1, "creditsPerHour": 2.0, "accountingMaxRate": 2, "hardConstraints": [] },
-    "auth": { "loginUrl": "https://study.bjqiyang.com/", "probe": null, "fields": null, "captcha": "none", "sessionModel": "persistentProfile", "_probeUnverified": true },
+    "completion": {
+      "kind": "api",
+      "scope": "chapterPage",
+      "endpoint": "getUrl + '&current_time=' (finish?goodscourses_id=…)",
+      "pattern": "isEnd===1",
+      "verified": null,
+      "verifiedNote": "机制见 docs/HANDOVER.md §6.2（站点自己每 300s/拖动>60s/播完上报）；本次未现场复测"
+    },
+    "constraints": {
+      "maxParallel": 1,
+      "creditsPerHour": null,
+      "accountingMaxRate": 2,
+      "rateMax": 2,
+      "hardConstraints": [
+        "36 个直播课脚本不处理（非录播）",
+        "视频是直链 MP4，媒体时钟能真跑到 16x，但站点档位表含 2x → 对齐 2x"
+      ]
+    },
+    "auth": {
+      "loginUrl": null,
+      "probe": null,
+      "fields": null,
+      "captcha": "none",
+      "sessionModel": "persistentProfile",
+      "_probeUnverified": true,
+      "note": "9225 当前隧道不通，登录页 URL 与 probe 均未实测"
+    },
     "heal": { "resetOnStall": [], "restartDriverOnStall": false },
     "_probeUnverified": true,
-    "_note": "端口与驱动复用 ss-watch 的假设未独立验证；实际接入前需按 docs/AGENT-ARCHITECTURE.md §3 Step1 侦察"
+    "_unverified": ["auth.loginUrl", "auth.probe", "completion"],
+    "_sources": ["docs/HANDOVER.md §1.4/§6.2", "scripts/status.mjs:23", "scripts/lab/qy-watch.mjs"]
   },
 
   "webtrn": {
-    "label": "教师培训（webtrn）",
-    "host": "www.webtrn.cn",
+    "label": "教师培训平台（webtrn）",
+    "host": "tea.webtrn.cn",
     "cdp": 9226,
-    "capabilities": ["video", "homework", "post"],
+    "tunnel": { "target": "WJX@192.168.1.8", "remoteHost": "127.0.0.1", "remotePort": 9226 },
+    "capabilities": ["homework", "post"],
     "driver": {
-      "script": "webtrn-nav.mjs",
-      "args": ["--port", "{cdp}"],
+      "script": null,
+      "args": [],
       "singleton": true,
-      "watchOnly": true
+      "note": "无长跑驱动；写路径走页面内 NetClass.webtrn.*，一次性工具在 scripts/lab/webtrn-*.mjs（attach / upload-submit / reply-batch 等）",
+      "helpers": ["scripts/lab/webtrn-attach.mjs", "scripts/lab/webtrn-upload-submit.mjs", "scripts/lab/webtrn-reply-batch.mjs", "scripts/lab/webtrn-nav.mjs"]
     },
     "watchers": [],
     "categories": null,
-    "completion": { "kind": "pageText", "scope": "coursePage", "pattern": "已完成", "verified": null },
+    "completion": {
+      "kind": "pageText",
+      "scope": "coursePage",
+      "pattern": "成绩构成：课程学习 40% / 研修作业 40% / 研修活动 20% / 资源共享 20%",
+      "verified": null,
+      "verifiedNote": "成绩构成见 docs/HANDOVER.md §6.3；本次未现场复测"
+    },
     "constraints": {
       "maxParallel": 1,
-      "creditsPerHour": 2.0,
-      "accountingMaxRate": 2,
-      "hardConstraints": ["写路径（发帖/回帖/交作业）走页面内 NetClass.webtrn.*，不走 CDP 合成点击"]
+      "creditsPerHour": null,
+      "accountingMaxRate": null,
+      "hardConstraints": [
+        "写路径（发帖/回帖/交作业）走页面内 NetClass.webtrn.*，CDP eval 会超时（docs/HANDOVER.md §5.24）",
+        "上传文件必须是笔记本本地绝对路径（DOM.setFileInputFiles）",
+        "该 profile 的加载器未开开发者模式，userScripts 注册会失败（§7.8）"
+      ]
     },
-    "auth": { "loginUrl": "https://www.webtrn.cn/", "probe": null, "fields": null, "captcha": "image", "sessionModel": "persistentProfile", "_probeUnverified": true },
+    "auth": {
+      "loginUrl": "https://tea.webtrn.cn/center/loginSmall.jsp",
+      "probe": null,
+      "fields": { "user": "#loginId", "pass": "#passwd", "code": "#authCode" },
+      "captcha": "image",
+      "sessionModel": "persistentProfile",
+      "_probeUnverified": true,
+      "note": "字段与路径来自 docs/HANDOVER.md §6.3；验证码默认隐藏，出现即转人工。9226 当前隧道不通，未实测 probe"
+    },
     "heal": { "resetOnStall": [], "restartDriverOnStall": false },
     "_probeUnverified": true,
-    "_note": "host 与端口需实测确认；写路径 API 已实现（见 skill references/platforms.md）"
+    "_unverified": ["auth.probe", "completion"],
+    "_sources": ["docs/HANDOVER.md §5.24-5.30/§6.3", "scripts/status.mjs:24", "scripts/lab/webtrn-login.mjs", "scripts/lab/webtrn-nav.mjs"]
   }
 }
