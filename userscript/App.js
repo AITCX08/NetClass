@@ -1583,8 +1583,26 @@
         const done = Number(o.learned_score) || 0;            // 已结算学时
         const remainHours = Math.max(0, total - done);
         const remainSec = remainHours * 3600;                 // 剩余视频秒数（1 学时≈3600s 视频）
-        const rate = 1.25;                                    // 平台记账硬上限（实测：播 2x/3x 都只记 1.25x）
-        this._p = { total: total, done: done, pct: total ? Math.round(done / total * 100) : 0, remainSec: remainSec, etaSec: remainSec / rate, rate: rate };
+        const rate = 1.25;                                    // 记录上限 = 1.25 × 累计墙钟（实测：播 2x/3x 都只记 1.25x）
+        // ★ 2026-10-19 修：原来 pct = round(done/total*100) 会显示 101%（91.1/90），
+        //   看起来"超额完成"，但**平台的真正达标条件是分科**：
+        //     「本培训须完成公需科目30学时、专业科目（含学段通识）60学时」
+        //   → 总学时超标 ≠ 培训达标（实测：总 91.1/90 时，专业科目仍只有 58/60）。
+        //   这里做三件事，避免那个误导数字：
+        //     ① pct 上限 100（不为超额"庆祝"）
+        //     ② 超额部分放进 over，让面板能写"总学时已达标（超额 1.1）"
+        //     ③ 加 note 说明"总学时达标 ≠ 分科达标"，提示去看平台的分科明细
+        const rawPct = total ? Math.round(done / total * 100) : 0;
+        this._p = {
+          total: total,
+          done: done,
+          pct: Math.min(100, rawPct),
+          over: done > total ? Number((done - total).toFixed(1)) : 0,
+          remainSec: remainSec,
+          etaSec: remainSec / rate,
+          rate: rate,
+          note: done >= total ? '总学时已达标（分科是否达标看平台明细）' : null,
+        };
       } catch (_) { }
     },
     progressInfo() { return this._p; },

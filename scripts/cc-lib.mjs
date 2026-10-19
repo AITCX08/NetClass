@@ -395,7 +395,14 @@ export const HUNTER_JS = `(function(){
       //   ② setter 不能"有条件忽略"，否则平台用原生 setter 写 1x 时照样生效。
       //   现在：getter **每次实时读** localStorage；setter **一律忽略**外部写入；
       //   真实倍速由我们每 tick 用**原生 setter** 压上去（绕过实例上的访问器）。
-      var getR = function(){ try { var x = parseFloat(localStorage.getItem('ncCc:rate') || '2'); return (x >= 1.2 ? x : 2); } catch(e){ return 2; } };
+      /* ★★ 2026-10-19 记账铁律（抓包实测，别再改回 2x）：
+       *   服务端 video-progress/report 返回 max_position_sec = min(历次上报 position, **1.25 × 该资源累计墙钟**)。
+       *   实测两组数据：① 40s 墙钟恰好 +50s（1.25x）② 首播起 459s 墙钟 → 记账 564.7s（1.25×459）。
+       *   ⇒ 一条 805s 的段，**无论播放倍速多高，最快也只能花 805/1.25 = 644s 墙钟**才记满；
+       *     播 2x 时播放器 402s 就冲到末尾，而记账只到 62.5% → 会被判"没完成"，只能反复重进补录（白费导航开销）。
+       *   ⇒ 正确做法：**倍速压到 1.25x**，让"播放器位置"与"记账上限"同速 → 一趟播完即 completed。
+       *   （平台 UI 无 1.25x 档也没关系：这里是直接改 playbackRate，站内 1.0/1.5/2.0 档位不影响。） */
+      var getR = function(){ try { var x = parseFloat(localStorage.getItem('ncCc:rate') || '1.25'); return (x >= 1.1 ? x : 1.25); } catch(e){ return 1.25; } };
       var R = getR();
       // ★★ 2026-10-18 修（倍速掉回 1x 的真因）：
       //   播放器库自己会 Object.defineProperty(v,'playbackRate',{get(){return vt.call(this)}, set:...})
@@ -607,7 +614,14 @@ export async function enumerate(tab, cat = null) {
       if(!/编码[:：]/.test(t) || !/学时/.test(t)) return;
       var name=t.split('编码')[0].trim();
       if(!name||name.length>80||seen[name])return; seen[name]=1;
-      out.push({name:name, cat:catOf(b), undone:!/(已完成|已学习|合格)/.test(t)});
+      // ★ 2026-10-19：带上**编码**（唯一）与平台自己的状态词 ——
+      //   编码用于精确点开（同前缀课不会串门），状态词用于判 done（平台口径，不是"我试过"）。
+      var mc=t.match(/编码[:：]\\s*([A-Za-z0-9_-]+)/);
+      var st=/(已完成)/.test(t)?'已完成'
+            :/(学习中)/.test(t)?'学习中'
+            :/(已学习)/.test(t)?'已学习'
+            :/(未学习)/.test(t)?'未学习':'';
+      out.push({name:name, cat:catOf(b), code:mc?mc[1]:null, status:st, undone:!/(已完成|已学习|合格)/.test(t)});
     });
     return out;
   })())`);
@@ -625,14 +639,31 @@ export async function enumerate(tab, cat = null) {
  *    实测：单展开分类0 时同一门「国家安全教育」2 秒就进课程页（7 段，5 段已看完）。
  *    现在：卡片不存在/宽 0 时，先 expand(tab, cat) 把它自己的分类展开，再找一次。
  *  @param {number|null|undefined} cat 目标课所属分类（0/1/2，null=全部）
+ *  @param {string|null} code 课程编码（如 C2601759）。**强烈建议传**：
+ *    ★★ 2026-10-19 定位到的"假完成 / 死循环"总根因 ——
+ *    旧写法只用 `name.slice(0,16)` 做子串匹配，而平台里**同系列课共享长前缀**：
+ *      「初中数学新课标解读：核心素养的主要表现——运算能力」
+ *      「初中数学新课标解读：核心素养的主要表现——推理能力」…（8 门，前 16 字完全一样）
+ *      「指向核心素养的单元学历案编制——指向核心素养的教学 / 何为单元学历案？ / 编制」
+ *    → `find()` 命中的是**列表里第一门**（往往是已完成的兄弟课）
+ *    → 进去看到全是「重看」→ pendingSegments=0 → 被误判"无待播段/本课结束"→ 写 done 墓碑
+ *    → 平台仍显示未学习 → 认领表被假墓碑堵死 → "没有可认领的课"死循环。
+ *    实测（19:53）：按编码点 C2601759 → 正确打开「运算能力」，3 段全是「播放」，可播。
+ *    现在：有 code 一律按 code 匹配；没有 code 时先要求**完整课程名相等**，最后才退回子串。
  */
-export async function openCourse(tab, name, log = () => { }, cat = undefined) {
+export async function openCourse(tab, name, log = () => { }, cat = undefined, code = null) {
   const findCard = (nm) => tab.ev(`(function(){
       var bs = Array.from(document.querySelectorAll('.MuiListItemButton-root'));
-      var b = bs.find(function(e){ return (e.innerText||'').indexOf(${JSON.stringify(nm.slice(0, 16))}) >= 0; });
+      var CODE = ${JSON.stringify(code ? String(code) : '')};
+      var NM = ${JSON.stringify(String(nm))};
+      var b = null;
+      if (CODE) b = bs.find(function(e){ return (e.innerText||'').indexOf(CODE) >= 0; });
+      // 完整课程名（编码前的整段）必须相等 —— 杜绝同前缀串门
+      if (!b) b = bs.find(function(e){ var t=(e.innerText||'').split('编码')[0]; return (t||'').replace(/\\s+/g,' ').trim() === NM; });
+      if (!b) b = bs.find(function(e){ return (e.innerText||'').indexOf(NM) >= 0; });
       if (!b) return 'notfound'; b.scrollIntoView({block:'center'});
       var r = b.getBoundingClientRect(); if (r.width < 1) return 'zero';
-      return JSON.stringify({x: Math.round(r.left + Math.min(48, r.width/2)), y: Math.round(r.top + r.height/2)});
+      return JSON.stringify({x: Math.round(r.left + Math.min(48, r.width/2)), y: Math.round(r.top + r.height/2), t:(b.innerText||'').replace(/\\s+/g,' ').trim().slice(0,80)});
     })()`);
   for (let a = 1; a <= 3; a++) {
     let box = await findCard(name);
@@ -645,11 +676,25 @@ export async function openCourse(tab, name, log = () => { }, cat = undefined) {
     }
     if (!box || box === 'notfound' || box === 'zero' || box.__err) { log('  列表里找不到 ' + name.slice(0, 16) + '（' + (box === 'zero' ? '折叠·宽0' : 'DOM 无此卡') + '）'); return false; }
     const b = JSON.parse(box);
+    if (b.t) log('  点开卡片: ' + b.t.slice(0, 46));
     await tab.clickAt(b.x, b.y);
     for (let w = 0; w < 20; w++) {
       await sleep(2000);
       const s = await pageState(tab);
-      if (s && (s.onCourse || s.onPlayer)) { log('  已进课程页(' + ((w + 1) * 2) + 's)'); return true; }
+      if (s && (s.onCourse || s.onPlayer)) {
+        // ★ 进课校验：课程页正文必须出现这个编码，否则说明又串门了 → 退回去重找
+        if (code) {
+          const has = await tab.ev(`(function(){ return ((document.body.innerText||'').indexOf(${JSON.stringify(String(code))}) >= 0) })()`);
+          if (!has) {
+            log('  ⚠ 进错课（页面无编码 ' + code + '）→ 退回重找');
+            await backToTraining(tab, log);
+            await sleep(3000);
+            return false;
+          }
+        }
+        log('  已进课程页(' + ((w + 1) * 2) + 's)' + (code ? ' 编码核对通过 ' + code : ''));
+        return true;
+      }
     }
     log('  第 ' + a + ' 次点开后仍未进课程（可能是弹层/加载慢）');
   }
