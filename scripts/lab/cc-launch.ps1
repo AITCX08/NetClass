@@ -8,7 +8,7 @@ param(
   [int]$WaitSec = 60
 )
 $ErrorActionPreference = 'SilentlyContinue'
-$repo = 'C:\Users\Administrator\Desktop\Vibe\netclass'
+$repo = 'D:\Vibe\NetClass'
 Set-Location $repo
 
 function Get-Drivers {

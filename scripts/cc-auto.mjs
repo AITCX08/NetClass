@@ -20,11 +20,22 @@ import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } fr
 
 const A = {};
 const argv = process.argv.slice(2);
-for (let i = 0; i < argv.length; i++) if (argv[i].startsWith('--')) A[argv[i].slice(2)] = (argv[i + 1] && !argv[i + 1].startsWith('--')) ? argv[++i] : true;
+// ★ 2026-10-18 修：旧写法只认 `--cat 0`（空格形式）；`--cat=0` 会被存成 A['cat=0']
+//   → A.cat 仍是 undefined → CAT=null → 日志显示 cat=ALL，分类参数**静默失效**
+//   （实测：传 --cat=0 却把三个分类一起枚举，展开后互相折叠 → 卡片 0 宽 → "打不开"）。
+//   现在两种形式都认。
+for (let i = 0; i < argv.length; i++) {
+  const a = argv[i];
+  if (!a.startsWith('--')) continue;
+  const eq = a.indexOf('=');
+  if (eq > 2) { A[a.slice(2, eq)] = a.slice(eq + 1); continue; }        // --cat=0
+  A[a.slice(2)] = (argv[i + 1] && !argv[i + 1].startsWith('--')) ? argv[++i] : true;   // --cat 0
+}
 
 const PORT = Number(A.port || 9228);
 const TAB = Number(A.tab || 0);
-const CAT = (A.cat === undefined || A.cat === true) ? null : Number(A.cat);
+const CATRAW = (A.cat === undefined || A.cat === true || String(A.cat).toLowerCase() === 'all') ? null : Number(A.cat);
+const CAT = (CATRAW === null || (Number.isInteger(CATRAW) && CATRAW >= 0 && CATRAW <= 2)) ? CATRAW : null;
 const TAG = String(A.tag || ('t' + TAB));
 const TOKEN = 'data-nc-owner';
 const RUNFILE = 'runs/cc-run-' + TAG + '.json';
@@ -78,27 +89,42 @@ async function pendingSegs(tab) {
   })()`);
 }
 
-/** 播放当前视频直到播完；返回 'done' | 'gone' | 'stall' */
+/** 播放当前视频直到播完；返回 {res:'done'|'gone'|'stall', segs}
+ *  ★ 2026-10-18 改良：播完一段**不再立刻点「返回课程列表」**。
+ *    实测这个播放器在播完后会**自动换片源续播下一段**（dur 从 1226 变成 702 那种）。
+ *    旧写法一播完就返回列表 → 列表里这条还是「继续 80%/96%」（服务端记的位置比本地播的靠后，
+ *    因为记账 1.25x 封顶）→ 又把同一段重看一遍，每段白花 1-4 分钟，看起来像"乱跳"。
+ *    现在：检测到 dur 变化（>5s）就当作自动续播，**原地继续守**，直到播放器消失或真播完。 */
 async function waitSegment(tab, idx) {
   let s0 = await pageState(tab);
-  if (!s0 || !s0.video) return 'gone';
-  const v0 = s0.video, t00 = Date.now();
-  let last = v0.cur, lastMove = Date.now(), tries = 0, lastLog = 0, lastPause = Date.now();
-  let maxCur = v0.cur;                 // ★ 历史最大位置（见下面的"回卷判据"）
-  log(`  段${idx} 起播 ${v0.cur}/${v0.dur} @${v0.rate}x`);
-  for (let g = 0; g < 3000; g++) {
+  if (!s0 || !s0.video) return { res: 'gone', segs: 0 };
+  let t00 = Date.now(), durRef = s0.video.dur, baseCur = s0.video.cur, segs = 0, wallAcc = 0;
+  let last = s0.video.cur, lastMove = Date.now(), tries = 0, lastLog = 0, lastPause = Date.now();
+  let maxCur = s0.video.cur;                 // ★ 历史最大位置（见下面的"回卷判据"）
+  log(`  段${idx} 起播 ${s0.video.cur}/${s0.video.dur} @${s0.video.rate}x`);
+  for (let g = 0; g < 6000; g++) {
     await sleep(POLL);
     const s = await pageState(tab);
     if (!s) continue;
     if (!s.video) {
       const wall = Math.round((Date.now() - t00) / 1000);
-      log(`  段${idx} 播放器关闭（页面=${flag(s)} 墙钟=${wall}s）`);
-      return s.onCourse ? 'done' : 'gone';
+      log(`  段${idx} 播放器关闭（页面=${flag(s)} 墙钟=${wall}s，本次共播完 ${segs} 段）`);
+      return { res: s.onCourse ? 'done' : 'gone', segs };
+    }
+    // ★ 自动续播：片源换了（时长明显不同）→ 段号 +1，基准重置，继续守
+    if (s.video.dur > 0 && durRef > 0 && Math.abs(s.video.dur - durRef) > 5) {
+      log(`  ⏭ 自动续播：段${idx}→段${idx + 1}（时长 ${Math.round(durRef)}s→${Math.round(s.video.dur)}s）`);
+      idx++; segs++;
+      wallAcc += (Date.now() - t00) / 1000;
+      durRef = s.video.dur; baseCur = s.video.cur; maxCur = s.video.cur;
+      t00 = Date.now(); last = s.video.cur; lastMove = Date.now(); lastPause = Date.now(); lastLog = 0; tries = 0;
+      continue;
     }
     if (s.video.dur && s.video.cur >= s.video.dur - 1.5) {
       const wall = (Date.now() - t00) / 1000;
-      log(`  ✔ 段${idx} 播完 ${s.video.cur}/${s.video.dur} 墙钟=${Math.round(wall)}s 实速=${Math.round((s.video.cur - v0.cur) / wall * 100) / 100}`);
-      return 'done';
+      log(`  ✔ 段${idx} 播完 ${s.video.cur}/${s.video.dur} 墙钟=${Math.round(wall)}s 实速=${Math.round((s.video.cur - baseCur) / wall * 100) / 100}`);
+      segs++;
+      return { res: 'done', segs, wall: wall + wallAcc };
     }
     // ★★ 回卷判据（2026-10-15 补，解决"卡在同一段无限重播"）：
     //   这个平台的播放器会**自己循环** —— 视频到末尾后立刻回到 0。
@@ -109,14 +135,23 @@ async function waitSegment(tab, idx) {
       if (s.video.cur > maxCur) maxCur = s.video.cur;
       if (maxCur >= s.video.dur - 3 && s.video.cur < s.video.dur * 0.2) {
         log(`  ✔ 段${idx} 判为播完（历史最高 ${Math.round(maxCur)}/${s.video.dur}，现已回卷到 ${Math.round(s.video.cur)}）`);
-        return 'done';
+        segs++;
+        return { res: 'done', segs, wall: (Date.now() - t00) / 1000 + wallAcc };
       }
     }
     if (Math.abs(s.video.cur - last) > 0.4) { last = s.video.cur; lastMove = Date.now(); }
+    // ★ 速率守护：倍速被打回 1x 时立刻压回去（否则墙钟翻倍、看起来像"卡住了"）
+    //   实测：播放器库在「换段 / seek / timeupdate」时会把 rate 打回 1，
+    //   所以这里**只要低于 1.5x 就每拍压一次**（只在异常时触发，正常不额外开销）。
+    if (s.video.rate && s.video.rate < 1.5) {
+      log(`  段${idx} ⚠ 倍速被打回 ${s.video.rate}x → 压回 2x`);
+      await tab.ev(`(function(){var v=document.querySelector('video');if(!v)return;try{var s=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'playbackRate').set;localStorage.setItem('ncCc:rate','2');s.call(v,2);v.muted=true;v.play&&v.play().catch(function(){})}catch(e){}})()`);
+      try { await installHunter(tab); } catch (_) { }
+    }
     if (Date.now() - lastLog > 120000) {
       lastLog = Date.now();
       const wall = (Date.now() - t00) / 1000;
-      log(`  …段${idx} ${s.video.cur}/${s.video.dur} @${s.video.rate}x${s.video.paused ? '(暂停)' : ''} 实速=${Math.round((s.video.cur - v0.cur) / wall * 100) / 100} ${s.pct ? 'pct=' + s.pct : ''}`);
+      log(`  …段${idx} ${s.video.cur}/${s.video.dur} @${s.video.rate}x${s.video.paused ? '(暂停)' : ''} 实速=${Math.round((s.video.cur - baseCur) / wall * 100) / 100} ${s.pct ? 'pct=' + s.pct : ''}`);
     }
     if (s.video.paused) {
       if (Date.now() - lastPause > 8000) {
@@ -132,10 +167,10 @@ async function waitSegment(tab, idx) {
       await tab.ev(`(function(){var v=document.querySelector('video');if(v){v.muted=true;try{v.play()}catch(e){}}})()`);
       await killUserscript(tab);
       lastMove = Date.now();
-      if (tries >= 6) return 'stall';
+      if (tries >= 6) return { res: 'stall', segs };
     }
   }
-  return 'stall';
+  return { res: 'stall', segs };
 }
 
 /* ---------------- 主循环 ---------------- */
@@ -164,11 +199,18 @@ let fastClose = {};        // 课程名 → 连续"播放器秒关"次数
 let handled = 0, segTotal = 0, sinceEnum = 0;
 let courses = [];
 let current = null;       // 当前认领的课程 {name,cat}
+let courseTries = 0;      // 当前课程：进入课程页尝试播放的次数（「播不动」防呆用）
+let coursePlayed = 0;     // 当前课程：真正播出去的墙钟秒数累计
 
 for (let tick = 1; tick <= 100000; tick++) {
   try {
     if (!tab.ws || tab.ws.readyState !== 1) { tab = await pickTab(); if (!tab) { await sleep(10000); continue; } log('重连 tab=' + tab.targetId.slice(0, 6)); }
     await killUserscript(tab);
+    // ★ 2026-10-18：每轮幂等装一次猎捕器（300ms 轮询：muted + 压倍速 + 拉起）。
+    //   实测坑：`播放器页 → 返回课程列表 → 再进下一段` 之后**新起的 video 元素是 1x**，
+    //   而猎捕器只在 playFirstSegment 里装过 → 页面重渲染后 setInterval 静默死掉，
+    //   倍速掉回 1x（日志出现 `@1x` / 实速 0.6），学时增长直接腰斩。
+    try { await installHunter(tab); } catch (_) { }
     const s = await pageState(tab);
     if (!s) { await sleep(5000); continue; }
 
@@ -204,7 +246,9 @@ for (let tick = 1; tick <= 100000; tick++) {
         continue;
       }
       const r = await waitSegment(tab, segTotal + 1);
-      if (r === 'done' || r === 'gone') { segTotal++; mode = 'COURSE'; await sleep(4000); }
+      if (r.segs) segTotal += r.segs;
+      if (r.wall) coursePlayed += r.wall;
+      if (r.res === 'done' || r.res === 'gone') { mode = 'COURSE'; await sleep(4000); }
       else { mode = 'COURSE'; await sleep(3000); }
       continue;
     }
@@ -222,6 +266,20 @@ for (let tick = 1; tick <= 100000; tick++) {
         continue;
       }
       log('  课程页待播段=' + pend + ' → 点播放');
+      // ★★ 2026-10-18「播不动」防呆（历史事故：能打开但播不了 → 起播→秒关→回列表→再进同一门，学时零增长）
+      //   判据：**这门课连续 4 次尝试、累计真正播放时长 < 30 秒**，还停在课程页 → 记跳过、换下一门。
+      //   正常课不会命中（任何一段真播了 30 秒以上，coursePlayed 就上去了）。
+      courseTries++;
+      if (courseTries >= 4 && coursePlayed < 30) {
+        log('  ⛔ 本课连续 ' + courseTries + ' 次只播了 ' + Math.round(coursePlayed) + 's（播不动）→ 跳过换课');
+        if (current && current.name) addSkip(current.name, '播不动');
+        if (current && current.name) releaseCourse(current.name, TAG);
+        current = null; courseTries = 0; coursePlayed = 0;
+        await backToTraining(tab, log);
+        mode = 'PICK'; sinceEnum = 0;
+        await sleep(3000);
+        continue;
+      }
       const v0 = await playFirstSegment(tab, log);
       if (!v0) {
         log('  ⚠ 段未起播，等 8s 重试');
@@ -236,6 +294,10 @@ for (let tick = 1; tick <= 100000; tick++) {
     if (s.onTrain) {
       if (sinceEnum <= 0) {
         await waitTrainRender(tab);
+        // ★★ 2026-10-18 结论：实测【展开一个分类后，其他两个会从 DOM 消失】
+        //   （MUI 手风琴 + 页面重渲染），所以【不能】在同一个页面里逐个分类枚举。
+        //   正确做法：一个分类一个进程 —— 用 --cat=0 / 1 / 2 分别跑。
+        //   实测：--cat=0（小初高公需）能枚举到 36 门、其中未完成 35 门。
         await expand(tab, CAT, log);
         courses = await enumerate(tab, CAT);
         if (!courses.length) {
@@ -245,6 +307,28 @@ for (let tick = 1; tick <= 100000; tick++) {
           }
         }
         if (!courses.length) { log('  ⚠ 仍 0 门，20s 后重试'); await sleep(20000); continue; }
+        // ★ 2026-10-18：停在培训页的这一刻，把**平台真实学时**落盘（runs/cc-stats-cache.json）。
+        //   平台只在培训页渲染「已修 x / 达标 y 学时」和分类明细，播放器/课程页读不到；
+        //   看护程序（cc-watch）与轮转主管（cc-cycle）都靠这份缓存显示进度，避免"学时 ?"。
+        try {
+          const st = await tab.ev(`(function(){
+            var t=(document.body.innerText||'').replace(/\\s+/g,' ');
+            var m=t.match(/已修\\s*([\\d.]+)\\s*\\/\\s*达标\\s*(\\d+)\\s*学时/);
+            var cats=[];
+            Array.from(document.querySelectorAll('.MuiAccordion-root')).forEach(function(a){
+              var h=a.querySelector('h3'); if(!h) return; var x=(h.innerText||'').replace(/\\s+/g,' ');
+              var mm=x.match(/([\\d.]+)\\s*\\/\\s*达标\\s*(\\d+)\\s*学时/);
+              var nm=/小初高公需/.test(x)?0:(/初中学段通识/.test(x)?1:(/初中数学|专业课/.test(x)?2:null));
+              if(nm!==null) cats.push({cat:nm, done:mm?Number(mm[1]):null, target:mm?Number(mm[2]):null, raw:x.slice(0,46)});
+            });
+            return JSON.stringify({total:m?{done:Number(m[1]),target:Number(m[2])}:null, cats:cats, onTrain:true, at:Date.now()});
+          })()`);
+          if (st) {
+            writeFileSync('runs/cc-stats-cache.json', st);
+            const o = JSON.parse(st);
+            if (o.total) log('  📊 平台学时 ' + o.total.done + '/' + o.total.target + ' | ' + o.cats.map(c => '分类' + c.cat + ' ' + c.done + '/' + c.target).join(' · '));
+          }
+        } catch (_) { }
         const undone = courses.filter(c => c.undone);
         log(`[${tick}] ${CAT === null ? '全部' : CATNAMES[CAT]} 枚举 ${courses.length} 门 / 未完成 ${undone.length} 门`);
         if (!undone.length) { log('✅ 本分区全部完成'); break; }
@@ -274,11 +358,12 @@ for (let tick = 1; tick <= 100000; tick++) {
       }
       const target = free[0];
       log(`  ▶ 未完成 ${undone.length} 门，我占 ${free.length} 门 → ${target.name.slice(0, 30)}`);
-      if (await openCourse(tab, target.name, log)) {
+      if (await openCourse(tab, target.name, log, target.cat)) {
         mode = 'COURSE';
         // ★ 进课当下就认领：否则别的实例在枚举时会以为这门没人做
         await claimCourse(target.name, TAG, { port: PORT });
         current = { name: target.name, cat: target.cat };
+        courseTries = 0; coursePlayed = 0;   // 换课了，防呆计数重置
         saveRun({ tag: TAG, target: target.name, cat: target.cat, mode, at: Date.now(), segTotal });
       } else {
         addSkip(target.name, '打不开'); releaseCourse(target.name, TAG);

@@ -7,7 +7,7 @@ param(
   [int]$CheckSec = 180
 )
 $ErrorActionPreference = 'SilentlyContinue'
-$repo = 'C:\Users\Administrator\Desktop\Vibe\netclass'
+$repo = 'D:\Vibe\NetClass'
 Set-Location $repo
 
 function Get-Drivers {

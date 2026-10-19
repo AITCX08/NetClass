@@ -10,6 +10,15 @@
  *
  * ⚠️ 启动子进程一律用 `--k=v` 形式（空格形式曾因解析歧义产生 NaN → 进程空转被拖死）。
  *
+ * ★ P0（2026-10-19）改造：看护清单不再硬编码在 TARGETS 里，改为**数据驱动**——
+ *   来源是 config/platforms.json（经 scripts/registry.mjs 读取）：
+ *     · 每个平台的 driver / watchers 里带 `supervise` 块的，就是一个被托管的进程
+ *     · `supervise.order` 决定遍历顺序，`supervise.match` 决定进程匹配，args 里的 {cdp} 自动展开
+ *     · 跨平台组件（progress-report）写在 _meta.global
+ *   落到的 argv / 日志路径 / 遍历顺序与改造前**逐字一致**（见 node scripts/registry.mjs targets 可对比）。
+ *   注册表读不出来时**不致命**：本轮只做 CDP 体检，不拉起也不清理进程（避免错误地复制/误杀），
+ *   修好 JSON 后下一轮自动恢复（热读，按 mtime）。
+ *
  * 用法：node scripts\supervisor.mjs [--interval=60] [--dry]
  */
 const argv = process.argv.slice(2);
@@ -27,6 +36,7 @@ const DRY = argv.includes('--dry');
 const { appendFileSync, mkdirSync, openSync } = await import('node:fs');
 const { execFileSync } = await import('node:child_process');
 const { spawn } = await import('node:child_process');
+const registry = await import('./registry.mjs');
 mkdirSync('runs', { recursive: true });
 const log = (m) => {
   const line = '[' + new Date().toLocaleTimeString('zh-CN', { hour12: false }) + '] ' + m;
@@ -77,19 +87,43 @@ async function portHasPage(port) {
   } catch (_) { return false; }
 }
 
-// 监管清单：name / 进程匹配 / 是否必须唯一 / 启动参数 / 日志
-const TARGETS = [
-  // ★ watchOnly（2026-10-16）：ss-watch 现在会【自行退出】—— 连续 5 分钟没有可播视频
-  //   就判定课程已学完（见 ss-watch.mjs 的 DONE_ROUNDS）。所以主管只监视、不再拉起，
-  //   否则它刚退出就被重启，等于白改。课程又有新视频时，手动起一次即可。
-  { name: 'ss看门狗', match: 'ss-watch\\.mjs', uniq: true, args: ['scripts/ss-watch.mjs', '--stall=3', '--interval=30'], out: 'runs/ss-watch-console.log', err: 'runs/ss-watch.err.log', watchOnly: true },
-  { name: '提交看门狗', match: 'cx-submit-watch\\.mjs', uniq: true, args: ['scripts/cx-submit-watch.mjs', '--interval=30'], out: 'runs/cx-submit-watch-console.log', err: 'runs/cx-submit-watch.err.log' , watchOnly: true },
-  { name: '进度记录', match: 'progress-report\\.mjs', uniq: true, args: ['scripts/progress-report.mjs', '--every=300'], out: 'runs/progress-console.log', err: 'runs/progress.err.log' },
-  // 长春驱动归 Agent B 独占（9228 同时只能一个会话，多开必 423 Locked）。
-  // ★ 主管只【监视】不【启动】它，避免和 Agent B 抢标签（2026-10-15 主线让路）。
-  { name: '长春驱动', match: 'cc-auto\\.mjs --port', uniq: true, args: ['scripts/cc-auto.mjs', '--port', '9228', '--tab', '0', '--secs', '10'], out: 'runs/cc-driver.log', err: 'runs/cc-driver.err.log' },
-  { name: '学习通驱动', match: 'cx-auto\\.mjs --port', uniq: true, args: ['scripts/cx-auto.mjs', '--port', '9227', '--secs', '10', '--maxmins', '400'], out: 'runs/cx-driver.out.log', err: 'runs/cx-driver.err.log' , watchOnly: true },
-];
+/* ────────────────────────────────────────────────────────────────
+ * 监管清单：**数据驱动**（config/platforms.json → scripts/registry.mjs）
+ *   registry.targets() 返回的元素形状 = 旧硬编码 TARGETS 的元素形状：
+ *     { name, match, uniq, args, out, err, watchOnly, watchNote }
+ * 每轮循环都重读（registry 按 mtime 热读）→ 改 JSON 不用重启主管。
+ * ──────────────────────────────────────────────────────────────── */
+let TARGETS = [];
+let PORTS = [];
+let lastSig = '';
+
+function refreshTargets() {
+  try {
+    const next = registry.targets().map(t => ({
+      name: t.name,
+      match: t.match,
+      uniq: t.uniq !== false,
+      args: t.args,
+      out: t.out,
+      err: t.err,
+      watchOnly: t.watchOnly === true,
+      watchNote: t.watchNote || null,
+    }));
+    PORTS = registry.supervisePorts();
+    TARGETS = next;
+  } catch (e) {
+    // ★ 注册表坏了不许把看护搞挂：本轮只做 CDP 体检（不拉起、不清理），修好下一轮自动回来
+    log('  ✗ 平台注册表读取失败：' + String(e.message).slice(0, 120) + ' → 本轮只做 CDP 体检（不拉起/不清理进程）');
+    TARGETS = [];
+    PORTS = [];
+    return;
+  }
+  const sig = TARGETS.map(t => t.name + '|' + t.match + '|' + t.args.join(' ')).join(' ;; ');
+  if (sig !== lastSig) {
+    lastSig = sig;
+    log('  看护清单（config/platforms.json）：' + TARGETS.map(t => t.name).join(' → '));
+  }
+}
 
 /** 重建某个端口的隧道（端口不通时调用） */
 function rebuildTunnel(port) {
@@ -126,11 +160,13 @@ function dedupeSelf(cycle) {
 let cycleNo = 0;
 log('=== 系统级主管启动（每 ' + INTERVAL + 's 全量体检）===' + (DRY ? ' [dry]' : ''));
 dedupeSelf(0);
+refreshTargets();
 
 for (;;) {
+  refreshTargets();                 // 每轮热读注册表（改 JSON 即生效）
   const ports = [];
   const down = [];
-  for (const p of [9224, 9227, 9228]) {
+  for (const p of PORTS) {
     const ok = await portHasPage(p);
     ports.push(p + (ok ? '✅' : '❌'));
     if (!ok) down.push(p);
@@ -166,8 +202,9 @@ for (;;) {
     }
     if (!pids.length) {
       issues.push(t.name + '缺失');
-      // ★ watchOnly：只监视不启动（长春驱动归 Agent B 独占，多开会 423 Locked）
-      if (t.watchOnly) log('  ⚠ ' + t.name + ' 不在运行（只监视不启动（已按用户要求暂停学习通处理））');
+      // ★ watchOnly：只监视不启动（进程会自行退出 / 用户要求暂停 → 多开只会添乱）
+      //   watchNote 来自注册表，缺省「只监视不启动」
+      if (t.watchOnly) log('  ⚠ ' + t.name + ' 不在运行（只监视不启动' + (t.watchNote ? '（' + t.watchNote + '）' : '') + '）');
       else if (!DRY) spawnDetached(t.args, t.out, t.err);
     }
   }

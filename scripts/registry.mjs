@@ -229,8 +229,8 @@ export function targets() {
         args: argvOf(obj, p),
         out: obj.out || null,
         err: obj.err || null,
-        watchOnly: obj.watchOnly === true,
-        watchNote: obj.watchNote || null,
+        // 只在真时出现：保持与改造前硬编码 TARGETS 的字段形状一致（缺省=不 watchOnly）
+        ...(obj.watchOnly === true ? { watchOnly: true, watchNote: obj.watchNote || null } : {}),
       });
     };
     push('driver', p.driver);
@@ -242,7 +242,7 @@ export function targets() {
       platform: null, kind: 'global', cdp: null,
       name: g.name, match: g.match, uniq: g.uniq !== false, order: order(g),
       args: (g.args || []).map(String), out: g.out || null, err: g.err || null,
-      watchOnly: g.watchOnly === true, watchNote: g.watchNote || null,
+      ...(g.watchOnly === true ? { watchOnly: true, watchNote: g.watchNote || null } : {}),
     });
   }
   out.sort((a, b) => a.order - b.order);   // V8 的 sort 是稳定排序：order 打平时保持数据里的先后

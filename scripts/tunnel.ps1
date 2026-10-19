@@ -17,7 +17,7 @@ $args = @(
   '-N',
   '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'PasswordAuthentication=no',
   '-o', 'PreferredAuthentications=publickey', '-o', 'ConnectTimeout=8', '-o', 'ConnectionAttempts=1',
-  '-o', 'StrictHostKeyChecking=yes', '-o', 'HostKeyAlgorithms=ssh-ed25519',
+  '-o', 'StrictHostKeyChecking=accept-new', '-o', 'HostKeyAlgorithms=ssh-ed25519',
   '-o', 'HostKeyAlias=192.168.1.10',
   '-o', 'UserKnownHostsFile=C:/Users/Administrator/.ssh/known_hosts',
   '-o', 'ExitOnForwardFailure=yes',

@@ -9,6 +9,9 @@
  *  · 油猴脚本 ccjyxy 无适配器：cfg.autoNext 必须关掉（否则盲点「下一节」把 SPA 反复踢回训练页）
  */
 const CATNAMES = ['小初高公需', '初中学段通识', '专业课-初中数学'];
+// ★ 2026-10-18 修正：第三类页面上的标题是「初中数学」（旧值写成 '专业课-初中数学'，
+//   expand() 用 indexOf 子串匹配，'初中数学' 依然能命中；但 catOf() 里的 /专业课/ 正则会漏，
+//   导致这一类的课程 cat=null → 按分类过滤时就丢了）。
 const HOME = 'https://col.ccjyxy.cn';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -17,6 +20,65 @@ export async function listTabs(port) {
     const l = await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(6000) })).json();
     return l.filter(t => t.type === 'page' && /ccjyxy/.test(t.url) && !/tampermonkey/.test(t.url));
   } catch (_) { return null; }
+}
+
+/* ---------- 只读探测：平台真实学时（不抢标签归属，任何进程都能安全调用） ----------
+ * 返回 { total:{done,target}, cats:[{cat,done,target,raw}], onTrain, unknown? }
+ *  · 只有停在培训页时才有分类明细；在课程页/播放器页 → onTrain=false（stats 读不到属正常）
+ *  · CDP 走 SSH 隧道到笔记本，隧道断时返回 null（判断"没读到"，不要当成"完成了"） */
+export async function readCcStats(port = 9228) {
+  const tabs = await listTabs(port);
+  if (!tabs || !tabs.length) return null;
+  /* ★ 2026-10-19 修：原来只读 tabs[0]。驱动在播放器页时 tabs[0] 就是播放器 → 读不到分类明细
+   *   → cc-cycle 过滤不掉已达标的分类（分类0 30.9/30 还继续跑 cat=0）。改成逐个标签试，
+   *   优先返回「停在培训页」（onTrain=true）的那份，没有再退回第一份可读结果。 */
+  let fallback = null;
+  for (const page of tabs) {
+    const st = await readStatsFromTab(page);
+    if (!st) continue;
+    if (st.onTrain) return st;
+    if (!fallback) fallback = st;
+  }
+  return fallback;
+}
+
+async function readStatsFromTab(page) {
+  let ws;
+  try {
+    ws = new WebSocket(page.webSocketDebuggerUrl);
+    await new Promise((res, rej) => {
+      ws.addEventListener('open', res, { once: true });
+      ws.addEventListener('error', () => rej(new Error('ws-error')), { once: true });
+      setTimeout(() => rej(new Error('ws-open-timeout')), 8000);
+    });
+    const got = new Promise(res => {
+      const h = e => { try { const m = JSON.parse(e.data); if (m.id === 1) { ws.removeEventListener('message', h); res(m); } } catch (_) { } };
+      ws.addEventListener('message', h);
+      setTimeout(() => res(null), 8000);
+    });
+    ws.send(JSON.stringify({
+      id: 1, method: 'Runtime.evaluate', params: {
+        returnByValue: true, expression: `(function(){
+          var t=(document.body.innerText||'').replace(/\\s+/g,' ');
+          var total=t.match(/已修\\s*([\\d.]+)\\s*\\/\\s*达标\\s*(\\d+)\\s*学时/);
+          var out={total: total?{done:Number(total[1]),target:Number(total[2])}:null, cats:[], onTrain:false, onCourse:/返回培训内容列表/.test(t), onPlayer:/返回课程列表/.test(t)};
+          Array.from(document.querySelectorAll('.MuiAccordion-root')).forEach(function(a){
+            var h=a.querySelector('h3'); if(!h) return;
+            var x=(h.innerText||'').replace(/\\s+/g,' ');
+            var m=x.match(/([\\d.]+)\\s*\\/\\s*达标\\s*(\\d+)\\s*学时/);
+            var nm=/小初高公需/.test(x)?0:(/初中学段通识/.test(x)?1:(/初中数学|专业课/.test(x)?2:null));
+            if(nm!==null) out.cats.push({cat:nm, done:m?Number(m[1]):null, target:m?Number(m[2]):null, raw:x.slice(0,46)});
+          });
+          out.onTrain = out.cats.length>=2;
+          return JSON.stringify(out);
+        })()`
+      }
+    }));
+    const m = await got;
+    const v = m && m.result && m.result.result && m.result.result.value;
+    if (!v) return null;
+    return JSON.parse(v);
+  } catch (_) { return null; } finally { try { ws && ws.close(); } catch (_) { } }
 }
 
 /* ---------- 跨进程认领（同一浏览器多实例分工，避免撞车） ---------- */
@@ -333,14 +395,27 @@ export const HUNTER_JS = `(function(){
       //   ② setter 不能"有条件忽略"，否则平台用原生 setter 写 1x 时照样生效。
       //   现在：getter **每次实时读** localStorage；setter **一律忽略**外部写入；
       //   真实倍速由我们每 tick 用**原生 setter** 压上去（绕过实例上的访问器）。
-      var getR = function(){ try { return parseFloat(localStorage.getItem('ncCc:rate') || '2'); } catch(e){ return 2; } };
+      var getR = function(){ try { var x = parseFloat(localStorage.getItem('ncCc:rate') || '2'); return (x >= 1.2 ? x : 2); } catch(e){ return 2; } };
       var R = getR();
-      if (!v.__ccRateLock) {
+      // ★★ 2026-10-18 修（倍速掉回 1x 的真因）：
+      //   播放器库自己会 Object.defineProperty(v,'playbackRate',{get(){return vt.call(this)}, set:...})
+      //   （实测取到的 ownGet 就是 get(){return vt.call(this)}）—— 它把**我们的访问器直接覆盖**了。
+      //   旧判据只看 v.__ccRateLock，这个标记还在 → 以为"已装好" → 再不去压，于是永远 1x
+      //   （日志：段N 起播 ... @1x、实速 0.6~1.0，墙钟翻倍）。
+      //   现在：**每 tick 校验 own descriptor 的 get 还是不是我们那个函数**，被覆盖就重新装。
+      var lockOK = false;
+      try {
+        var dd = Object.getOwnPropertyDescriptor(v, 'playbackRate');
+        lockOK = !!(dd && dd.get && dd.get === v.__ccLockGet);
+      } catch (e) { lockOK = false; }
+      if (!lockOK) {
+        var myGet = function(){ return getR(); };
         Object.defineProperty(v, 'playbackRate', {
           configurable: true,
-          get: function(){ return getR(); },
+          get: myGet,
           set: function(_x){ /* 平台想写回 1x：一律忽略 */ }
         });
+        v.__ccLockGet = myGet;
         v.__ccRateLock = 1;
       }
       // 每 tick 用原生 setter 把真实倍速压上去（这是绕过实例访问器的唯一通道）
@@ -522,7 +597,7 @@ export async function enumerate(tab, cat = null) {
         if (accs[i].contains(el)) {
           var h = accs[i].querySelector('h3.MuiAccordion-heading');
           var tx = h ? (h.innerText||'') : '';
-          return /小初高公需/.test(tx)?0:(/初中学段通识/.test(tx)?1:(/专业课/.test(tx)?2:null));
+          return /小初高公需/.test(tx)?0:(/初中学段通识/.test(tx)?1:(/初中数学|专业课/.test(tx)?2:null));
         }
       }
       return null;
@@ -542,17 +617,33 @@ export async function enumerate(tab, cat = null) {
   return cat === null ? all : all.filter(x => x.cat === cat);
 }
 
-/** 打开课程（课程名）→ 等课程详情页 */
-export async function openCourse(tab, name, log = () => { }) {
-  for (let a = 1; a <= 3; a++) {
-    const box = await tab.ev(`(function(){
+/** 打开课程（课程名）→ 等课程详情页
+ *  ★ 2026-10-18 修（"打不开"的真因，此前把 52 门课全塞进跳过表）：
+ *    MUI 手风琴**折叠时课程卡仍在 DOM 里，但 display:none → 宽高 0**。
+ *    驱动用 ALL 模式先展开分类0/1/2，最后只有分类2是展开的 → 分类0/1 的卡宽 0
+ *    → 旧代码 `if (r.width < 1) return null` → 直接报"列表里找不到" → 判死跳过。
+ *    实测：单展开分类0 时同一门「国家安全教育」2 秒就进课程页（7 段，5 段已看完）。
+ *    现在：卡片不存在/宽 0 时，先 expand(tab, cat) 把它自己的分类展开，再找一次。
+ *  @param {number|null|undefined} cat 目标课所属分类（0/1/2，null=全部）
+ */
+export async function openCourse(tab, name, log = () => { }, cat = undefined) {
+  const findCard = (nm) => tab.ev(`(function(){
       var bs = Array.from(document.querySelectorAll('.MuiListItemButton-root'));
-      var b = bs.find(function(e){ return (e.innerText||'').indexOf(${JSON.stringify(name.slice(0, 16))}) >= 0; });
-      if (!b) return null; b.scrollIntoView({block:'center'});
-      var r = b.getBoundingClientRect(); if (r.width < 1) return null;
+      var b = bs.find(function(e){ return (e.innerText||'').indexOf(${JSON.stringify(nm.slice(0, 16))}) >= 0; });
+      if (!b) return 'notfound'; b.scrollIntoView({block:'center'});
+      var r = b.getBoundingClientRect(); if (r.width < 1) return 'zero';
       return JSON.stringify({x: Math.round(r.left + Math.min(48, r.width/2)), y: Math.round(r.top + r.height/2)});
     })()`);
-    if (!box || box.__err) { log('  列表里找不到 ' + name.slice(0, 16)); return false; }
+  for (let a = 1; a <= 3; a++) {
+    let box = await findCard(name);
+    // 卡在 DOM 但不可点（折叠）→ 展开它自己的分类再来一次
+    if ((box === 'notfound' || box === 'zero' || !box || box.__err) && cat !== undefined && cat !== null) {
+      log('  卡片不可点(' + (box === 'zero' ? '折叠·宽0' : String(box)) + ') → 重新展开分类[' + cat + ']');
+      await expand(tab, cat, log);
+      await sleep(1500);
+      box = await findCard(name);
+    }
+    if (!box || box === 'notfound' || box === 'zero' || box.__err) { log('  列表里找不到 ' + name.slice(0, 16) + '（' + (box === 'zero' ? '折叠·宽0' : 'DOM 无此卡') + '）'); return false; }
     const b = JSON.parse(box);
     await tab.clickAt(b.x, b.y);
     for (let w = 0; w < 20; w++) {
