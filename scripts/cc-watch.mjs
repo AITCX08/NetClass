@@ -100,5 +100,19 @@ for (;;) {
   const line = `[${hhmmss()}] 学时${hrs} | ${cats} | 驱动=${pid || '无'} | ${note}`;
   console.log(line);
   try { appendFileSync(LOGF, line + '\n'); } catch (_) { }
+
+  // ★ 2026-10-20 修：三个分类全达标 + 驱动没在跑 → 看护任务已完成，退出不再空转。
+  //   （原来会永远每 3 分钟写一行"驱动未运行（等 cc-cycle 拉起）"，
+  //    实测从 06:05 写到 11:16 —— 5 小时空转。）
+  if (s && s.cats && s.cats.length && !pid) {
+    const allMet = s.cats.every(c => c.done !== null && c.target !== null && c.done >= c.target);
+    if (allMet) {
+      const done = `[${hhmmss()}] ✅ 三分类全达标且驱动未运行 → 看护收工退出`;
+      console.log(done);
+      try { appendFileSync(LOGF, done + '\n'); } catch (_) { }
+      process.exit(0);
+    }
+  }
+
   await sleep(EVERY);
 }

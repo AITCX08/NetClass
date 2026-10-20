@@ -36,6 +36,10 @@ const PORT = Number(A.port || 9228);
 const TAB = Number(A.tab || 0);
 const ONLY = (A.only === undefined || A.only === true) ? null : Number(A.only);
 const ROUNDS = Number(A.rounds || 0);              // 0 = 无限
+// ★ 2026-10-20：三分类全达标后要【连续几轮确认】才收工退出。
+//   原来全达标后只 sleep 600s 再核 → 永远空转（实测转了 5 小时）。
+//   默认 3 轮（约 20 分钟）确认稳定后退出；--done-exit=1 可改成立即退出。
+const DONE_CONFIRM = Math.max(1, Number(A['done-exit'] || A.doneExit || 3));
 const CATNAMES = ['小初高公需', '初中学段通识', '专业课-初中数学'];
 const CYCLE_JSON = 'runs/cc-cycle.json';
 const CYCLE_LOG = 'runs/cc-cycle.log';
@@ -155,6 +159,7 @@ function killStrayDrivers(keepPid) {
 log('=== 轮转主管启动 port=' + PORT + ' tab=' + TAB + (ONLY === null ? '' : ' only=' + ONLY) + (ROUNDS ? ' rounds=' + ROUNDS : ' 持续轮转') + ' ====');
 
 let round = 0;
+let doneRounds = 0;   // 连续"三分类全达标"的轮数（用于收工判定）
 let stuck = {};      // cat → 连续"秒退"次数
 for (;;) {
   round++;
@@ -180,12 +185,65 @@ for (;;) {
     });
   }
   if (!order.length) {
-    log('🎉 三个分类全部达标（看平台页面：' + (stats && stats.total ? stats.total.done + '/' + stats.total.target : '?') + ' 学时）→ 10 分钟后再核一遍');
-    saveState({ phase: 'all-done' });
+    // ★ 2026-10-20 修：原来这里只"10 分钟后再核一遍"→ 三分类全达标后【永远空转】
+    //   （实测从 06:05 转到 11:16，5 小时，cc-watch 也跟着每 3 分钟写"驱动未运行"）。
+    //   现在：连续 DONE_CONFIRM 轮都全达标 → 写最终报告并自行退出，把CPU/日志还给系统。
+    doneRounds++;
+    log('🎉 三个分类全部达标（第 ' + doneRounds + '/' + DONE_CONFIRM + ' 轮确认）· 平台页面 '
+      + (stats && stats.total ? stats.total.done + '/' + stats.total.target : '?') + ' 学时');
+    saveState({ phase: 'all-done', doneRounds, at: Date.now() });
+
+    // 第一轮确认时就把最终成果落盘（即便后面被 kill 也有记录）
+    if (doneRounds === 1 && stats && stats.cats) {
+      try {
+        const prof = stats.cats[1] ? stats.cats[1].done : 0;
+        const prof2 = stats.cats[2] ? stats.cats[2].done : 0;
+        const lines = [
+          '# 长春教师培训 · 完成报告',
+          '',
+          '- 生成时间：' + new Date().toLocaleString('zh-CN'),
+          '- 平台：https://col.ccjyxy.cn（CDP 9228）',
+          '',
+          '## 学时账（平台口径）',
+          '',
+          '| 分类 | 已修 / 达标 | 状态 |',
+          '|---|---|---|',
+          ...stats.cats.map(c => '| ' + (CATNAMES[c.cat] || ('分类' + c.cat)) + ' | ' + c.done + ' / ' + c.target + ' | ' + (c.done >= c.target ? '✅ 达标' : '❌ 未达标') + ' |'),
+          '| **总学时** | **' + stats.total.done + ' / ' + stats.total.target + '** | ' + (stats.total.done >= stats.total.target ? '✅' : '❌') + ' |',
+          '| **专业科目**（分类1+2） | **' + (prof + prof2).toFixed(1) + ' / 60** | ' + ((prof + prof2) >= 60 ? '✅' : '❌') + ' |',
+          '',
+          '> 平台要求：公需科目 30 学时 + 专业科目（含学段通识）60 学时。',
+          '',
+          '## 结论',
+          '',
+          ((prof + prof2) >= 60 && stats.total.done >= stats.total.target)
+            ? '**全部达标，培训完成。**'
+            : '**未全部达标，需继续。**',
+          '',
+        ].join('\n');
+        const { writeFileSync, mkdirSync } = await import('node:fs');
+        const { join, dirname } = await import('node:path');
+        const { fileURLToPath } = await import('node:url');
+        // cc-cycle.mjs 里没有 ROOT 常量 → 用自身位置推算项目根（scripts/ 的上一级）
+        const projRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+        mkdirSync(join(projRoot, 'runs'), { recursive: true });
+        writeFileSync(join(projRoot, 'runs', 'cc-final-report.md'), lines);
+        log('📄 最终报告已写入 runs/cc-final-report.md');
+      } catch (e) {
+        log('⚠ 写最终报告失败：' + String(e.message).slice(0, 60));
+      }
+    }
+
+    if (doneRounds >= DONE_CONFIRM) {
+      log('✅ 连续 ' + DONE_CONFIRM + ' 轮确认全达标 → 收工退出（不再空转）');
+      saveState({ phase: 'finished', doneRounds, at: Date.now() });
+      process.exit(0);
+    }
     await sleep(600000);
     if (ROUNDS && round >= ROUNDS) break;
     continue;
   }
+  doneRounds = 0;   // 有任何分类没达标 → 重置确认计数
 
   const cat = order[0];
   // 起跑前先确保没有残留驱动（单会话硬约束：多开必 423）
