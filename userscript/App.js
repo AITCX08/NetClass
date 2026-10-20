@@ -12,7 +12,7 @@
   // 热重载时先回收上一个实例
   try { window.NetClass && window.NetClass.dispose && window.NetClass.dispose(); } catch (_) { }
 
-  const VERSION = '0.5.0';
+  const VERSION = '0.5.4';
   const NS = '[NetClass]';
   const HOST = location.hostname;
   const PLATFORM = /shengshengketang/i.test(HOST) ? 'shengsheng'
@@ -1580,18 +1580,25 @@
         const o = arr && arr[0];
         if (!o) return;
         const total = Number(o.required_score) || 90;         // 需完成学时
-        const done = Number(o.learned_score) || 0;            // 已结算学时
+        const done = Number((Number(o.learned_score) || 0).toFixed(1));  // 已结算学时（保留1位，防 15.700000000000001）
         const remainHours = Math.max(0, total - done);
         const remainSec = remainHours * 3600;                 // 剩余视频秒数（1 学时≈3600s 视频）
         const rate = 1.25;                                    // 记录上限 = 1.25 × 累计墙钟（实测：播 2x/3x 都只记 1.25x）
-        // ★ 2026-10-19 修：原来 pct = round(done/total*100) 会显示 101%（91.1/90），
-        //   看起来"超额完成"，但**平台的真正达标条件是分科**：
-        //     「本培训须完成公需科目30学时、专业科目（含学段通识）60学时」
-        //   → 总学时超标 ≠ 培训达标（实测：总 91.1/90 时，专业科目仍只有 58/60）。
-        //   这里做三件事，避免那个误导数字：
-        //     ① pct 上限 100（不为超额"庆祝"）
-        //     ② 超额部分放进 over，让面板能写"总学时已达标（超额 1.1）"
-        //     ③ 加 note 说明"总学时达标 ≠ 分科达标"，提示去看平台的分科明细
+        // ★ 2026-10-20 新增：用平台自己的判据判"培训完成"。
+        //   /api/v1/me/my-trainings-progress 返回里直接有 passed + groups[].passed，
+        //   比我们自己算"总分≥90 且 专业≥60"更可靠（平台口径优先）。
+        const groups = Array.isArray(o.groups) ? o.groups : [];
+        const groupsOk = groups.length ? groups.every(g => g.passed === true) : null;
+        const trainingPassed = o.passed === true || groupsOk === true;
+        // 分科明细（面板可直接显示，比只有总学时清楚）
+        const cats = groups.map(g => ({
+          name: g.group_name,
+          done: Number((Number(g.learned_score) || 0).toFixed(1)),
+          target: Number((Number(g.required_score) || 0).toFixed(1)),
+          passed: g.passed === true,
+          coursesDone: g.completed_courses,
+          coursesTotal: g.total_courses,
+        }));
         const rawPct = total ? Math.round(done / total * 100) : 0;
         this._p = {
           total: total,
@@ -1601,8 +1608,23 @@
           remainSec: remainSec,
           etaSec: remainSec / rate,
           rate: rate,
-          note: done >= total ? '总学时已达标（分科是否达标看平台明细）' : null,
+          // ★ 平台口径
+          passed: trainingPassed,
+          cats: cats,
+          coursesDone: o.completed_courses,
+          coursesTotal: o.total_courses,
+          title: o.training_title || null,
+          note: trainingPassed
+            ? '平台已判定培训通过'
+            : (done >= total ? '总学时已达标（分科是否达标看平台明细）' : null),
         };
+        // ★ 全达标 → 走统一的"已完成"流程（停自动化 + 亮色横幅 + 持久化）
+        if (trainingPassed && !state.allDone) {
+          const gtxt = cats.map(c => c.name + ' ' + c.done.toFixed(1) + '/' + c.target.toFixed(1) + (c.passed ? '✅' : '')).join(' · ');
+          markAllDone('平台判定培训已通过：' + done + '/' + total + ' 学时' +
+            (cats.length ? '（' + gtxt + '）' : '') +
+            (o.completed_courses != null ? ' · 完成 ' + o.completed_courses + '/' + o.total_courses + ' 门课' : ''));
+        }
       } catch (_) { }
     },
     progressInfo() { return this._p; },
@@ -2076,19 +2098,38 @@
   const DONE_KEY = 'netclass.done.' + PLATFORM;
   function readDone() { try { return JSON.parse(localStorage.getItem(DONE_KEY) || 'null'); } catch (_) { return null; } }
 
-  /** 明显的横幅提示（面板之外的独立元素，不容易被忽略）；带关闭按钮，可收起 */
+  /** 明显的横幅提示（面板之外的独立元素，不容易被忽略）；带关闭按钮，可收起
+   *  ★ 2026-10-20：完成态横幅改为【亮色 + 呼吸动画 + 大字号】，用户明确要求"亮色更明显"。
+   *    原来 done 用的是深墨绿渐变(#0f5132→#1b7a4b)，在深色页面上不够显眼。 */
   let bannerEl = null;
   function showBanner(html, tone) {
     try {
       if (bannerEl) bannerEl.remove();
       bannerEl = document.createElement('div');
       bannerEl.id = 'netclass-banner';
-      const bg = tone === 'done' ? 'linear-gradient(90deg,#0f5132,#1b7a4b)'
-        : tone === 'warn' ? 'linear-gradient(90deg,#5a3a0a,#8a5a12)'
+      const bg = tone === 'done' ? 'linear-gradient(90deg,#00e676,#00c853,#00e676)'
+        : tone === 'warn' ? 'linear-gradient(90deg,#ff9800,#ffb300)'
           : 'linear-gradient(90deg,#1e3a5f,#2b5286)';
+      const isDone = tone === 'done';
       bannerEl.style.cssText = 'position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:2147483647;' +
-        'font:14px/1.7 "Segoe UI",system-ui,"Microsoft YaHei",sans-serif;color:#fff;background:' + bg + ';' +
-        'padding:10px 40px 10px 22px;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.5);max-width:88vw;text-align:center;user-select:none';
+        'font:' + (isDone ? '600 17px/1.7' : '14px/1.7') + ' "Segoe UI",system-ui,"Microsoft YaHei",sans-serif;' +
+        'color:#fff;background:' + bg + ';' +
+        'padding:' + (isDone ? '16px 52px 16px 30px' : '10px 40px 10px 22px') + ';' +
+        'border-radius:' + (isDone ? '14px' : '10px') + ';' +
+        'box-shadow:' + (isDone
+          ? '0 0 0 3px rgba(0,230,118,.55), 0 0 28px rgba(0,230,118,.85), 0 12px 36px rgba(0,0,0,.55)'
+          : '0 10px 30px rgba(0,0,0,.5)') + ';' +
+        'text-shadow:' + (isDone ? '0 2px 6px rgba(0,0,0,.45)' : 'none') + ';' +
+        'max-width:88vw;text-align:center;user-select:none;' +
+        (isDone ? 'animation:netclass-pulse 1.6s ease-in-out infinite;' : '');
+      // 呼吸动画（只注入一次）
+      if (isDone && !document.getElementById('netclass-pulse-kf')) {
+        const st = document.createElement('style');
+        st.id = 'netclass-pulse-kf';
+        st.textContent = '@keyframes netclass-pulse{0%,100%{transform:translateX(-50%) scale(1);}' +
+          '50%{transform:translateX(-50%) scale(1.035);}}';
+        (document.head || document.documentElement).appendChild(st);
+      }
       bannerEl.innerHTML = html +
         '<span id="netclass-banner-x" title="关闭" style="position:absolute;top:4px;right:8px;cursor:pointer;' +
         'font-size:16px;line-height:1;opacity:.75;padding:2px 6px;border-radius:4px">✕</span>';
@@ -2099,8 +2140,8 @@
         x.onmouseleave = () => { x.style.opacity = '.75'; x.style.background = 'transparent'; };
         x.onclick = () => hideBanner();
       }
-      // 30 秒后自动收起（仍在面板上能看到状态）
-      timers.push(setTimeout(() => { if (bannerEl) hideBanner(); }, 30000));
+      // 完成态【不自动收起】—— 用户要能一直看到"已完成"；其它提示 30 秒后收
+      if (!isDone) timers.push(setTimeout(() => { if (bannerEl) hideBanner(); }, 30000));
     } catch (_) { }
   }
   function hideBanner() { try { if (bannerEl) { bannerEl.remove(); bannerEl = null; } } catch (_) { } }
@@ -2122,10 +2163,21 @@
     const msg = detail || '本门课程已全部处理完毕';
     log('🎉 全部完成，自动化已暂停、播放已停止');
     report('all-done', { platform: PLATFORM, url: location.href, detail: msg });
+    // ★ 2026-10-20：原来写死两分支 `PLATFORM === 'qiyang' ? '职业培训' : '心理学导论'`，
+    //   长春(ccjyxy)会显示成"心理学导论已全部完成"——完全错误的文案。改成查表 + 兜底。
+    const DONE_LABEL = {
+      ccjyxy: '长春教师培训',
+      qiyang: '职业培训',
+      shengsheng: '生生课堂',
+      chaoxing: '学习通',
+      zhihuishu: '智慧树知到',
+      webtrn: '教师培训平台',
+    };
+    const label = DONE_LABEL[PLATFORM] || (ADAPTER && ADAPTER.label) || '本课程';
     showBanner(
-      '<b>✅ ' + (PLATFORM === 'qiyang' ? '职业培训' : '心理学导论') + ' 已全部完成</b><br>' +
-      '<span style="opacity:.9">' + msg + ' —— 自动化已暂停，播放已停止</span><br>' +
-      '<span style="opacity:.75;font-size:12px">如需重新扫描，点右下角面板的「启动」</span>'
+      '<div style="font-size:22px;letter-spacing:.5px;margin-bottom:4px">✅ ' + label + ' 课程已完成</div>' +
+      '<div style="font-size:14px;opacity:.95">' + msg + '</div>' +
+      '<div style="font-size:12px;opacity:.85;margin-top:4px">自动化已暂停 · 播放已停止 · 可关闭此提示</div>'
       , 'done');
     return true;
   }
@@ -2308,11 +2360,16 @@
       btn = document.createElement('div');
       btn.id = 'netclass-toggle';
       btn.setAttribute('data-nc-self', '1');
+      // ★ 2026-10-20：用户反馈"右上角的 +/− 看不到"。实测按钮【存在且位置正确】(932,6)，
+      //   但 20×20 的深色小方块 + 暗金 #f0c674 在深色页头上几乎不可见。
+      //   → 放大到 30×30、亮绿描边发光、字号 20px 加粗，确保一眼能看到。
       btn.style.cssText = 'position:fixed;z-index:2147483647;cursor:pointer;'
-        + 'width:20px;height:20px;line-height:18px;text-align:center;font-weight:700;'
-        + 'background:rgba(29,23,18,.86);color:#f0c674;border:1px solid #5a4a33;border-radius:4px;'
-        + 'font-family:system-ui,sans-serif;font-size:14px;user-select:none;'
-        + 'box-shadow:0 1px 5px rgba(0,0,0,.4)';
+        + 'width:30px;height:30px;line-height:26px;text-align:center;font-weight:800;'
+        + 'background:linear-gradient(180deg,#1f2a24,#13201a);color:#00e676;'
+        + 'border:2px solid #00e676;border-radius:8px;'
+        + 'font-family:system-ui,sans-serif;font-size:20px;user-select:none;'
+        + 'box-shadow:0 0 0 2px rgba(0,230,118,.25),0 0 12px rgba(0,230,118,.55),0 2px 8px rgba(0,0,0,.5);'
+        + 'text-shadow:0 0 6px rgba(0,230,118,.9)';
       btn.onclick = () => {
         let now = false;
         try { now = localStorage.getItem(PANEL_COLLAPSED_KEY) === '1'; } catch (_) { }
@@ -2333,7 +2390,8 @@
     const b = document.getElementById('netclass-toggle');
     if (!b) return;
     const vw = window.outerWidth || window.innerWidth;
-    b.style.left = Math.max(8, vw - 20 - 8) + 'px';
+    // 按钮 30×30（原来 20×20），贴右上角留 8px 边距
+    b.style.left = Math.max(8, vw - 30 - 8) + 'px';
     b.style.top = '6px';
   }
   function setPanelCollapsed(v) {
@@ -2385,10 +2443,24 @@
       const BTN = 'background:transparent;color:' + C.fg + ';border:1px solid ' + C.bd + ';border-radius:4px;padding:3px 9px;font:12px/1.5 inherit;display:inline-block;cursor:pointer';
       const btn = (a, label) => `<button data-a="${a}" style="${BTN}">${label}</button>`;
       const pr = courseProgress();
-      // 全平台统一口径：进度百分比 + 已完成/总数 + 剩余 + 预估（学习通也走这条，不再单列"视频总时长"）
+      // ★ 2026-10-20：完成态在面板里用【亮绿块】明确显示，不再只靠百分比
+      //   （用户反馈：课程刷完了但面板没明确提示，要像生生课堂那样显示"课程已完成"）
       const prog = !pr ? '进度 —'
-        : `进度 <b>${pr.pct}%</b> (${pr.done}/${pr.total}) · 剩 ${fmtDur(pr.remainSec)} → 约 <b>${fmtDur(pr.etaSec)}</b>${pr.unknown ? ` <span style="opacity:.5">(${pr.unknown}节无时长)</span>` : ''}`;
-      const bar = `<div style="height:5px;background:#241d17;border-radius:3px;overflow:hidden;margin:7px 0 6px"><div style="height:100%;width:${pr ? Math.max(0, Math.min(100, pr.pct)) : 0}%;background:${C.accent};transition:width .4s"></div></div>`;
+        : pr.passed
+          ? `<div style="background:linear-gradient(90deg,#00e676,#00c853);color:#04210d;font-weight:700;` +
+            `border-radius:6px;padding:5px 8px;text-align:center;font-size:13px;margin:2px 0 4px;` +
+            `box-shadow:0 0 0 2px rgba(0,230,118,.35),0 0 14px rgba(0,230,118,.5)">` +
+            `✅ 课程已完成 · ${pr.done}/${pr.total} 学时</div>`
+          : `进度 <b>${pr.pct}%</b> (${pr.done}/${pr.total}) · 剩 ${fmtDur(pr.remainSec)} → 约 <b>${fmtDur(pr.etaSec)}</b>${pr.unknown ? ` <span style="opacity:.5">(${pr.unknown}节无时长)</span>` : ''}`;
+      // 分科明细（有 groups 时每行一条：名称 已修/达标 ✅）
+      const catLines = (pr && pr.cats && pr.cats.length)
+        ? pr.cats.map(c =>
+          `<div style="display:flex;justify-content:space-between;gap:6px;font-size:11px;opacity:.85">` +
+          `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.name}</span>` +
+          `<span style="flex:none">${c.done}/${c.target}${c.passed ? ' <b style="color:#00e676">✅</b>' : ''}</span></div>`
+        ).join('')
+        : '';
+      const bar = `<div style="height:5px;background:#241d17;border-radius:3px;overflow:hidden;margin:7px 0 6px"><div style="height:100%;width:${pr ? Math.max(0, Math.min(100, pr.pct)) : 0}%;background:${pr && pr.passed ? 'linear-gradient(90deg,#00e676,#00c853)' : C.accent};transition:width .4s"></div></div>`;
       panelEl.innerHTML =
         `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
            <div><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${CFG.enabled && !state.allDone ? C.ok : C.mut};margin-right:6px;vertical-align:middle"></span><b style="letter-spacing:.4px">NetClass</b> <span style="color:${C.mut};font-size:11px">v${VERSION}</span></div>
@@ -2397,6 +2469,7 @@
          <div style="color:${C.mut};margin-top:5px">${state.allDone ? '本课程已完成' : (CFG.enabled ? '自动处理中' : '已暂停')}</div>
          ${bar}
          <div style="opacity:.9">${prog}</div>
+           ${catLines}
          <div style="opacity:.8">视频 ${state.video.seen} · 结束 ${state.video.ended} · 倍速修正 ${state.video.rateFixes}</div>
          <div style="opacity:.8">弹题 见${state.quiz.seen} 答${state.quiz.answered} ✔${state.quiz.correct} ✘${state.quiz.wrong} · DS ${state.quiz.dsOk}/${state.quiz.dsAsk}${state.quiz.dsErr ? ' 失败' + state.quiz.dsErr : ''} · 库${Object.keys(bank).length}</div>
          <div style="opacity:.8">${vs}</div>
@@ -2491,7 +2564,12 @@
     if (prevDone && !CFG.enabled) {
       state.allDone = true;
       const when = prevDone.at ? new Date(prevDone.at).toLocaleString('zh-CN') : '';
-      const label = PLATFORM === 'qiyang' ? '职业培训' : '心理学导论';
+      // ★ 2026-10-20：原来是【第二份写死的两分支】，长春会显示成"心理学导论 已完成"
+      const LABEL2 = {
+        ccjyxy: '长春教师培训', qiyang: '职业培训', shengsheng: '生生课堂',
+        chaoxing: '学习通', zhihuishu: '智慧树知到', webtrn: '教师培训平台',
+      };
+      const label = LABEL2[PLATFORM] || (ADAPTER && ADAPTER.label) || '本课程';
       showBanner(
         '<b>✅ ' + label + ' 已完成</b><br>' +
         '<span style="opacity:.9">' + (prevDone.detail || '') + (when ? '（' + when + '）' : '') + '</span><br>' +
