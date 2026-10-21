@@ -543,5 +543,66 @@
       "scripts/lab/webtrn-login.mjs",
       "scripts/lab/webtrn-nav.mjs"
     ]
+  },
+  "smartedu": {
+    "label": "青海智慧教育",
+    "host": "basic.qh.smartedu.cn",
+    "cdp": 9230,
+    "capabilities": [
+      "video"
+    ],
+    "driver": {
+      "script": null,
+      "args": [],
+      "note": "无 Node 驱动：本次订单用一次性脚本 runs/qh-final.mjs 跑完（未入库）。要产品化需按下面的 constraints 写正式驱动。"
+    },
+    "watchers": [],
+    "categories": null,
+    "completion": {
+      "kind": "pageText",
+      "scope": "courseStudyPage",
+      "pattern": "课程页右上角绿色圆环「已完成」；章节树 .chapter_li 行尾「已完成」",
+      "perSubItem": "1.3 章的子项在右栏 .res_body[1] 的 .tab_ul 里，行尾「已完成」",
+      "verified": "2026-10-21",
+      "verifiedNote": "实测 50% → 已完成；6 个子项全绿；章节作业/章节测验均为空（无可提交内容）"
+    },
+    "constraints": {
+      "maxParallel": 1,
+      "creditsPerHour": null,
+      "accountingMaxRate": null,
+      "hardConstraints": [
+        "★ 记账模型：POST /resapi/train/instanceStudent/addStudyDuration，body 只有 {id, studyDuration:60}，不带 chapterId → 平台按【累计学习秒数】在后端异步分账。视频播完 ≠ 子项完成，实测滞后 5-8 分钟。正确姿势是【持续播 + 轮询等服务端追平】，不是精确逐段播完。",
+        "★ 播放器不会自动续播：1s 粒度 trace 实测 t=d=286/286 ended=true 后连续 60 秒纹丝不动。切段只能点主框架的 .chapter_li，播放器里没有任何选集/下一集控件。",
+        "★ 登录是 Ant Design：element.focus() 无效（文字会全打进用户名框）。必须用 Input.dispatchMouseEvent 真鼠标点击输入框中心坐标建立焦点，再用 Input.insertText 输入。",
+        "★ Page.reload() 会重置播放器：章节树回落根节点、播放器跳回第一个子项。播放期间绝不能刷新；刷新后必须重新点 1.3 才有子项列表。",
+        "★ 换段时播放器 iframe 会重建（executionContext id 从 8 变 10）→ 页内注入的倍速守护会丢，必须由外部周期性重注入。",
+        "★ 媒体栈瓶颈：同一 mp4 文件，页内 fetch() 能跑 24.5 Mbps，但 <video> 只有 ~1 MB/s。视频码率 4.2 Mbps（课程中心 143.5 MB / 286s），2x 需 8.4 Mbps 无余量 → 长段会掉到 0.4x。需按缓冲余量自适应倍速（1.0/1.25/1.5/1.75/2.0）。",
+        "★ 右栏有两个 .res_body：querySelector(\".res_body\") 拿到的是章节树不是资源面板，要用带 .tab_ul 的那个（或 [1]）。",
+        "播放器 UI 的计时器不跟随 video.currentTime（显示 00:00 但实际已播完）—— 判进度只认 CDP 读到的 currentTime，不要看 UI。"
+      ]
+    },
+    "auth": {
+      "loginUrl": "https://basic.qh.smartedu.cn/uc/login",
+      "probe": null,
+      "fields": {
+        "user": "#loginname",
+        "pass": "#password",
+        "submit": "button (文字「登 录」)"
+      },
+      "captcha": "none",
+      "sessionModel": "persistentProfile",
+      "_probeUnverified": true,
+      "note": "登录页是 Ant Design，字段是 id 不是 name；填值必须真鼠标点焦点（focus() 无效）。probe 未填，下次登录后补。"
+    },
+    "heal": {
+      "resetOnStall": [],
+      "restartDriverOnStall": false
+    },
+    "_notAdapted": true,
+    "_why": "2026-10-21 首次接入并跑完一个订单（人工智能通识教育课程资源应用培训，50% → 已完成）。约束与判据都已实测记录，但驱动脚本是一次性写的（runs/qh-final.mjs，未入库），要产品化需另写成 scripts/qh-auto.mjs 并挂到 driver.script。",
+    "_evidence": [
+      "runs/orders/qh-smartedu/03-验收报告.md",
+      "runs/orders/qh-smartedu/03-验收-1.3全部已完成.png"
+    ]
   }
 }

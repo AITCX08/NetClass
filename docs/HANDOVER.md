@@ -1030,3 +1030,106 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 ```
 **要点**：① 锚定 `scripts/xxx.mjs` 而不是裸文件名 ② 排除执行器自己的包装进程 ③ 一次只杀一个，
 杀完立刻验证链路（同样适用于 `scripts/converge-supervisor.mjs`）。
+
+### 5.59 「播完自动续播」是错觉 —— 必须用 1 秒粒度 trace 证伪（2026-10-21，青海 smartedu）
+
+**症状**：手动点了一个子项开始播后，过一会儿再看，`video.src` 变成了另一个文件，看起来像"播完自动切下一段"。
+
+**实测（1 秒粒度追踪）**：
+```
+t=286/286  ended=true
+t+1s  → 286/286   src 未变
+...
+t+60s → 286/286   src 仍未变     ← 连续 60 秒纹丝不动
+```
+**播放器根本不会自动续播。** 切段只能**点主框架的 `.chapter_li`**，播放器 iframe 里**没有任何选集/下一集/播完继续控件**（全 iframe 的文本节点只有 `00:00 / 32:17` 和一个 `<video>`）。
+
+**为什么会被骗**：平台在**服务端分账完成**后会把播放器切到下一个资源；如果两次观测间隔几十秒，就会误以为"播放器自己切的"。
+
+**教训**：遇到"看起来自动"的行为，**先写 1 秒粒度的 trace 跑 60 秒再下结论**。凭观察猜，一定错。
+
+### 5.60 「视频播完」≠「任务点完成」—— 记账接口不带任务 ID 就是后端异步分账（2026-10-21，青海 smartedu）
+
+**记账接口**：
+```
+POST /resapi/train/instanceStudent/addStudyDuration
+body: {"id": "<studentId>", "studyDuration": 60}     ← 只有这两个字段
+频率: 每 ~30s 墙钟报一次 60s
+```
+**★ 没有 `chapterId` / `chapterResId`** → 平台按**学生累计学习秒数**在后端**异步分账**，不是"播完这段就记这段的账"。
+
+**铁证**：
+| 子项 | 视频播完 | 子项翻「已完成」 | 滞后 |
+|---|---|---|---|
+| 课程中心 | 23:11 | **23:19** | **8 分钟** |
+| 数据看板 / 总结 | **从未单独播** | 23:10~23:13 自己翻绿 | — |
+
+**正确姿势**：不是"精确逐段播完"，而是 **在目标章节里持续播 + 高频轮询子项状态，等服务端追平**。多播一会儿能推动多个子项一起翻绿。
+
+**推论**：如果记账接口**不带任务 ID**，就说明平台是累计时长模型 → **播哪个子项都行，只要在正确章节里播够时长**。
+
+### 5.61 `<video>` 卡顿但网络够 —— 瓶颈在 Chrome 媒体栈，不在带宽（2026-10-21，青海 smartedu）
+
+**实测（同一个 mp4 文件、同一条网络）**：
+```
+页内 fetch()（1MB Range）  → 24.5 Mbps
+<video> 播放拉流            → ~1 MB/s (8 Mbps)
+```
+
+**视频码率**：4.2 Mbps（课程中心那个文件 143.5 MB / 286s，按 1937s 总时长算的）。
+**2x 需要 8.4 Mbps** —— 而 `<video>` 只能跑到 8 Mbps，**零余量**，所以长段会掉到 0.4x。
+
+**根因**：Chrome 媒体栈用**顺序小 Range 请求**拉流，并发度远低于 `fetch()`。链路本身有 10 Mbps 但喂不满 2x。
+
+**解法（按可靠性排序）**：
+1. **自适应倍速**：按 `buffered_end - currentTime` 在 1.0/1.25/1.5/1.75/2.0 之间切（本次实测这样能稳住）
+2. **整段 fetch 成 blob 再交给 `<video>`**（能到满速，但大文件占内存）
+3. 换更快的出口
+
+### 5.62 Ant Design 登录页：`element.focus()` 完全无效，必须真鼠标点（2026-10-21，青海 smartedu）
+
+**症状**：脚本填完账号密码，点登录 → 提示"请输入密码"，而**用户名框里变成了 `15897296436Cjy800504@15897296436`**（账号 + 密码 + 账号全挤在用户名框）。
+
+**实测三种填法，只有第三种有效**：
+```
+❌ document.getElementById("password").focus() + Input.insertText   → 文字仍进用户名框
+❌ 原生 value setter + dispatchEvent(input/change)                  → 值不生效
+✅ Input.dispatchMouseEvent(mousePressed/mouseReleased) 点在输入框中心
+   → activeElement 变成 password → 再 Input.insertText 才进得去
+```
+
+**关键代码**：
+```js
+const r = await ev(`(function(){var p=document.getElementById("password");var b=p.getBoundingClientRect();
+  return JSON.stringify({x:Math.round(b.x+b.width/2), y:Math.round(b.y+b.height/2)})})()`);
+const {x,y} = JSON.parse(r);
+for (const type of ["mousePressed","mouseReleased"]) {
+  await send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 });
+}
+// 先确认 activeElement 真的变了，再 insertText
+console.log(await ev("document.activeElement.id"));   // 必须是 password
+await send("Input.insertText", { text: PASSWORD });
+```
+
+**另**：这批站点登录框用的是 **`id`**（`#loginname` / `#password`），**`name` 属性是空的** —— 用 `input[name=loginname]` 会选不到。
+
+### 5.63 `Page.reload()` 会重置播放器状态 + 换段时 iframe 重建（2026-10-21，青海 smartedu）
+
+**两个连锁坑**：
+
+**① 刷新 = 进度归零**
+```
+Page.reload() 之后：
+  章节树 → 回落到根节点（必须重新点 1.3 才有子项列表）
+  播放器 → 跳回第一个子项（不是刚才那个）
+```
+**结论：播放期间绝不能刷新**。只在收口时刷新一次做最终复核。
+
+**② 换段时 iframe 会重建，页内注入的守护全丢**
+```
+换段前: Runtime.executionContext id = 8
+换段后: Runtime.executionContext id = 10     ← 新上下文，window.__guard 归 undefined
+```
+**结论**：页内 `setInterval` 守护（守倍速 / 守播放）**不能一次性注入**，必须由外部**周期性检查 context 并重注入**。本次做法：每 15 秒重连一次 CDP，遍历所有 context 找 video，`!(window.__guard && window.__guard.timer)` 就重注入。
+
+**③ 顺带**：右栏有**两个 `.res_body`** —— `querySelector(".res_body")` 拿到的是**章节树**不是资源面板，要用带 `.tab_ul` 的那个（或索引 `[1]`）。
