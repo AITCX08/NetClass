@@ -10,7 +10,21 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..');
 const shell = readFileSync(join(REPO, 'userscript', 'netclass.shell.user.js'), 'utf8');
-const app = readFileSync(join(REPO, 'userscript', 'App.js'), 'utf8');
+// ★ 2026-10-20：品牌/引流配置（brand.js）内联到 App.js 之前。
+//   userscript 注入在页面里读不到本地文件，二维码必须 base64 内联；
+//   单独一个文件方便换图/关闭，不碰主逻辑。文件缺失时用空实现兜底。
+let brandSrc = '';
+try {
+  brandSrc = readFileSync(join(REPO, 'userscript', 'brand.js'), 'utf8');
+} catch (_) {
+  console.log('  ⚠ userscript/brand.js 缺失 → 品牌区块将不显示');
+}
+const appRaw = readFileSync(join(REPO, 'userscript', 'App.js'), 'utf8');
+// ★ 只剥掉 Node 侧的 module.exports 那段（浏览器/页面里跑会 ReferenceError）。
+//   ⚠️ 不能从 "// 供 App.js" 那个注释开始剥 —— 它出现在 window.NETCLASS_BRAND = BRAND 之前，
+//      会把赋值语句一起删掉，导致 App.js 里读到 undefined（实测踩过）。
+const brandClean = brandSrc.replace(/\n\/\/ Node 侧[\s\S]*$/, '\n');
+const app = (brandClean ? brandClean + '\n' : '') + appRaw;
 
 const version = (app.match(/const VERSION = '([\d.]+)'/) || [, '0.4.0'])[1];
 

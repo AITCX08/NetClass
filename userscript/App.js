@@ -12,8 +12,49 @@
   // 热重载时先回收上一个实例
   try { window.NetClass && window.NetClass.dispose && window.NetClass.dispose(); } catch (_) { }
 
-  const VERSION = '0.5.4';
+  const VERSION = '0.5.6';
   const NS = '[NetClass]';
+  // ★ 2026-10-20：品牌/引流配置（userscript/brand.js 由 build.mjs 内联到此处之前）。
+  //   二维码是 base64 内联的（userscript 读不到本地文件）；留空则该位置不渲染，不会出破图。
+  const BRAND = (typeof window !== 'undefined' && window.NETCLASS_BRAND) || {
+    name: 'NetClass', author: '', repo: '',
+    wechatQr: '', wechatLabel: '微信交流', wechatHint: '',
+    donateQr: '', donateLabel: '赞赏支持', donateHint: '',
+    sponsorUrl: '', proTitle: '自动答题', proDesc: '', proUrl: '', proEnabled: false,
+    brandCollapsedByDefault: true,
+  };
+  /**
+   * 面板底部的品牌区块：微信码 + 赞赏码 + 仓库链接。
+   * 两个码都空 → 整个区块不渲染（开源给别人用时不打扰）。
+   * 已收起 → 只留一行"支持作者 ▾"，点开才显示二维码（默认收起，避免占满面板）。
+   */
+  function brandBlock() {
+    const hasQr = !!(BRAND.wechatQr || BRAND.donateQr || BRAND.sponsorUrl);
+    if (!hasQr && !BRAND.repo) return '';
+    let open = true;
+    try { open = localStorage.getItem('netclass.brandOpen') === '1'; } catch (_) { }
+    if (BRAND.brandCollapsedByDefault) open = open;   // 已持久化过就按持久化
+    const qrCell = (uri, label, hint) => uri
+      ? '<div style="text-align:center;flex:1">' +
+      `<img src="${uri}" style="width:84px;height:84px;border-radius:6px;background:#fff;padding:3px;display:block;margin:0 auto 3px" alt="${label}">` +
+      `<div style="font-size:11px;opacity:.9">${label}</div>` +
+      (hint ? `<div style="font-size:10px;opacity:.6">${hint}</div>` : '') +
+      '</div>'
+      : '';
+    const body = open
+      ? '<div style="display:flex;gap:8px;justify-content:center;margin-top:6px">' +
+      qrCell(BRAND.wechatQr, BRAND.wechatLabel, BRAND.wechatHint) +
+      qrCell(BRAND.donateQr, BRAND.donateLabel, BRAND.donateHint) +
+      '</div>' +
+      (BRAND.sponsorUrl ? `<div style="text-align:center;margin-top:5px;font-size:11px"><a href="${BRAND.sponsorUrl}" target="_blank" rel="noopener" style="color:#00e676">❤ GitHub Sponsors</a></div>` : '')
+      : '';
+    return '<div style="margin-top:9px;padding-top:7px;border-top:1px solid rgba(255,255,255,.12)">' +
+      `<div id="netclass-brand-hd" data-nc-self="1" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;font-size:11px;opacity:.8">` +
+      `<span>${BRAND.repo ? `<a href="${BRAND.repo}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">★ ${BRAND.name}</a>` : '★ ' + BRAND.name}` +
+      `${BRAND.author ? ` · by ${BRAND.author}` : ''}</span>` +
+      `<span style="opacity:.7">${open ? '收起 ▴' : '支持作者 ▾'}</span></div>` +
+      body + '</div>';
+  }
   const HOST = location.hostname;
   const PLATFORM = /shengshengketang/i.test(HOST) ? 'shengsheng'
     : /bjqiyang/i.test(HOST) ? 'qiyang'
@@ -2479,7 +2520,9 @@
            ${btn('quiz', '答题')}
            ${btn('next', '下一节')}
            ${btn('settings', '设置')}
-         </div>`;
+           ${BRAND.proEnabled ? btn('pro', '⚡ Pro') : ''}
+         </div>
+         ${brandBlock()}`;
       panelEl.querySelectorAll('button').forEach(b => {
         b.onmouseenter = () => { b.style.background = '#3a3a46'; };
         b.onmouseleave = () => { b.style.background = '#2b2b34'; };
