@@ -19,12 +19,27 @@ import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+
+// ★ 2026-10-20：SSH 参数从 config/local.json 读（去个人化后不再硬编码）
+import { readFileSync as __rf, existsSync as __ex } from 'node:fs';
+import { join as __join, dirname as __dn } from 'node:path';
+import { fileURLToPath as __fu } from 'node:url';
+const __ROOT = __join(__dn(__fu(import.meta.url)), '..');
+const NC_LOCAL_CFG = (() => {
+  try { const p = __join(__ROOT, 'config/local.json'); return __ex(p) ? JSON.parse(__rf(p, 'utf8')) : null; } catch { return null; }
+})();
+const NC_SSH_TARGET = NC_LOCAL_CFG?.ssh?.target || NC_SSH_TARGET;
+const NC_SSH_HOST = NC_SSH_TARGET.split('@').pop();
+const NC_SSH_USER = NC_SSH_TARGET.split('@')[0];
+const NC_SSH_KEY = NC_LOCAL_CFG?.ssh?.keyPath || NC_SSH_KEY;
+const NC_SSH_ALIAS = NC_LOCAL_CFG?.ssh?.hostKeyAlias || NC_SSH_HOST;
+const NC_SSH_KNOWN = NC_LOCAL_CFG?.ssh?.knownHostsFile || NC_SSH_KNOWN;
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..');
 const RUNS = join(REPO, 'runs');
 const TM_ID = 'dhdgffkkebhmkfjojejmpbldmpobfkfo';
-const LAPTOP = 'user@host';
-const SSH_KEY = 'C:/Users/YOURNAME/.ssh/id_ed25519';
+const LAPTOP = NC_SSH_TARGET;
+const SSH_KEY = NC_SSH_KEY;
 const CHROME = 'C:\\Users\\YOURNAME\\AppData\\Local\\Programs\\OCS Desktop\\resources\\bin\\chrome\\chrome\\chrome.exe';
 const EXT_TM = 'C:/Users/YOURNAME/AppData/Roaming/OCS Desktop/downloads/extensions/tampermonkey';
 // ★ 新平台（如学习通）要看到 NetClass 面板/模块，必须把加载器也装上；
@@ -36,8 +51,8 @@ const WORK = 'C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass';
 const SSH = [
   '-T', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'PasswordAuthentication=no',
   '-o', 'PreferredAuthentications=publickey', '-o', 'ConnectTimeout=8', '-o', 'ConnectionAttempts=1',
-  '-o', 'StrictHostKeyChecking=yes', '-o', 'HostKeyAlgorithms=ssh-ed25519',
-  '-o', 'HostKeyAlias=192.168.1.100',
+  '-o', 'StrictHostKeyChecking=accept-new', '-o', 'HostKeyAlgorithms=ssh-ed25519',
+  '-o', 'HostKeyAlias=' + NC_SSH_ALIAS,
   '-o', 'UserKnownHostsFile=C:/Users/YOURNAME/.ssh/known_hosts',
   '-i', SSH_KEY, LAPTOP
 ];

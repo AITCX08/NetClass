@@ -17,9 +17,18 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { argv, exit } from 'node:process';
 
-const LAPTOP = 'user@host';
-const KEY = 'C:/Users/YOURNAME/.ssh/id_ed25519';
-const HOST_KEY_ALIAS = '192.168.1.100';
+
+const __ROOT2 = (() => { const u = import.meta.url; const f = u.replace('file:///', '').replace(/\//g, '\\'); return f.slice(0, f.lastIndexOf('\\')); })();
+const NC_LOCAL_CFG = (() => { try { const p = __ROOT2 + '/../config/local.json'; const fs2 = require('node:fs'); return fs2.existsSync(p) ? JSON.parse(fs2.readFileSync(p, 'utf8')) : null; } catch { return null; } })();
+const NC_SSH_TARGET = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.target) || 'user@host';
+const NC_SSH_HOST = NC_SSH_TARGET.split('@').pop();
+const NC_SSH_USER = NC_SSH_TARGET.split('@')[0];
+const NC_SSH_KEY = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.keyPath) || 'C:/Users/YOURNAME/.ssh/id_ed25519';
+const NC_SSH_ALIAS = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.hostKeyAlias) || NC_SSH_HOST;
+const NC_SSH_KNOWN = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.knownHostsFile) || 'C:/Users/YOURNAME/.ssh/known_hosts';
+const LAPTOP = NC_SSH_TARGET;
+const KEY = NC_SSH_KEY;
+const HOST_KEY_ALIAS = NC_SSH_ALIAS;
 const CHROME = 'C:\\Users\\YOURNAME\\AppData\\Local\\Programs\\OCS Desktop\\resources\\bin\\chrome\\chrome\\chrome.exe';
 const EXT_DIR = 'C:/Users/YOURNAME/AppData/Roaming/OCS Desktop/downloads/extensions/tampermonkey';
 const PROFILE_ROOT = 'C:\\Users\\YOURNAME\\AppData\\Roaming\\OCS Desktop\\userDataDirs';
