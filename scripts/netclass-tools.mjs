@@ -19,7 +19,7 @@ import { argv, exit } from 'node:process';
 
 const LAPTOP = 'user@host';
 const KEY = 'C:/Users/YOURNAME/.ssh/id_ed25519';
-const HOST_KEY_ALIAS = '192.168.1.1000';
+const HOST_KEY_ALIAS = '192.168.1.100';
 const CHROME = 'C:\\Users\\YOURNAME\\AppData\\Local\\Programs\\OCS Desktop\\resources\\bin\\chrome\\chrome\\chrome.exe';
 const EXT_DIR = 'C:/Users/YOURNAME/AppData/Roaming/OCS Desktop/downloads/extensions/tampermonkey';
 const PROFILE_ROOT = 'C:\\Users\\YOURNAME\\AppData\\Roaming\\OCS Desktop\\userDataDirs';

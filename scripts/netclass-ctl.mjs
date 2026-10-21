@@ -3,7 +3,7 @@
  *
  * 前置：PC 侧起好 SSH 转发
  *   ssh -N -i C:/Users/YOURNAME/.ssh/id_ed25519 \
- *       -o HostKeyAlias=192.168.1.1000 -o UserKnownHostsFile=C:/Users/YOURNAME/.ssh/known_hosts \
+ *       -o HostKeyAlias=192.168.1.100 -o UserKnownHostsFile=C:/Users/YOURNAME/.ssh/known_hosts \
  *       -L 9224:127.0.0.1:9224 user@host
  * 端口约定：SSH 转发 9224 → 笔记本 Chrome 调试端口 9224
  *
@@ -38,7 +38,7 @@ const SSH_ARGS = [
   '-T', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'PasswordAuthentication=no',
   '-o', 'PreferredAuthentications=publickey', '-o', 'ConnectTimeout=8', '-o', 'ConnectionAttempts=1',
   '-o', 'StrictHostKeyChecking=yes', '-o', 'HostKeyAlgorithms=ssh-ed25519',
-  '-o', 'HostKeyAlias=192.168.1.1000',
+  '-o', 'HostKeyAlias=192.168.1.100',
   '-o', 'UserKnownHostsFile=C:/Users/YOURNAME/.ssh/known_hosts',
   '-i', SSH_KEY, LAPTOP
 ];
