@@ -15,7 +15,7 @@
 **代码在哪**：
 
 ```
-开发（本机）  C:\Users\Administrator\Desktop\Vibe\_opensource\artifacts\TaskMesh\netclass-20261013
+开发（本机）  <旧路径>/netclass
 部署（笔记本）%APPDATA%\OCS Desktop\downloads\extensions\netclass-loader\   ← 加载器扩展
               %LOCALAPPDATA%\TaskMesh\netclass\                            ← 脚本文件
 ```

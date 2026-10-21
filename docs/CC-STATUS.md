@@ -75,7 +75,7 @@
 ## 六、要跑完 90 学时，正确姿势（给下一个接手的人）
 
 ```powershell
-cd C:\Users\Administrator\Desktop\Vibe\_opensource\artifacts\TaskMesh\netclass-20261013
+cd <旧路径>/netclass
 powershell -NoProfile -File scripts\tunnel.ps1 -Port 9228      # 隧道断了先建
 node scripts\cc-go.mjs --port 9228                              # 确认在培训页（会兜底导航）
 Start-Process node -ArgumentList 'scripts\cc-auto.mjs --port 9228 --tag A' -WindowStyle Hidden `

@@ -11,10 +11,10 @@
   "_comment": "把本文件复制为 config/local.json 并填上你自己的值", 
 
   "ssh": {
-    "target": "user@192.168.1.1000",
+    "target": "user@192.168.1.100",
     "port": 22,
     "keyPath": "C:/Users/YOURNAME/.ssh/id_ed25519",
-    "hostKeyAlias": "192.168.1.1000",
+    "hostKeyAlias": "192.168.1.100",
     "knownHostsFile": "C:/Users/YOURNAME/.ssh/known_hosts",
     "_note": "浏览器如果在同一台机器上，把 ssh.target 留空即可（走本机直连）"
   },
