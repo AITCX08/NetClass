@@ -6,7 +6,7 @@
     .\netclass-deploy.ps1 -Action stop         # 停止模块服务
     .\netclass-deploy.ps1 -Action status       # 查看服务与文件状态
     .\netclass-deploy.ps1 -Action shell        # 打印壳脚本的本地安装地址
-  依赖：C:\Users\Administrator\.ssh\taskmesh_windows_laptop_ed25519（既有 SSH 身份）
+  依赖：C:\\Users\\YOURNAME\\.ssh\\id_ed25519（既有 SSH 身份）
 #>
 param(
   [Parameter(Mandatory = $true)][ValidateSet('push', 'start', 'stop', 'status', 'shell', 'logs')][string]$Action,
@@ -18,19 +18,23 @@ if (-not $Repo) {
 }
 Write-Host ("repo = " + $Repo)
 
-$LaptopHost = '192.168.1.8'
-$LaptopUser = 'WJX'
-$Key = 'C:/Users/Administrator/.ssh/taskmesh_windows_laptop_ed25519'
+# ★ 2026-10-20 去个人化：环境值从 config/local.json 读（缺失则用默认占位）
+$LocalCfg = $null
+$LocalPath = Join-Path $Repo 'config/local.json'
+if (Test-Path $LocalPath) { try { $LocalCfg = Get-Content $LocalPath -Raw | ConvertFrom-Json } catch { Write-Warning "config/local.json 解析失败" } }
+$LaptopHost = if ($LocalCfg -and $LocalCfg.ssh.target) { ($LocalCfg.ssh.target -split '@')[-1] } else { 'YOUR_BROWSER_HOST' }
+$LaptopUser = if ($LocalCfg -and $LocalCfg.ssh.target) { ($LocalCfg.ssh.target -split '@')[0] } else { 'YOURNAME' }
+$Key = if ($LocalCfg -and $LocalCfg.ssh.keyPath) { $LocalCfg.ssh.keyPath } else { 'C:/Users/YOURNAME/.ssh/id_ed25519' }
 $SshOpts = @(
   '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'PasswordAuthentication=no',
   '-o', 'PreferredAuthentications=publickey', '-o', 'ConnectTimeout=8', '-o', 'ConnectionAttempts=1',
-  '-o', 'StrictHostKeyChecking=yes', '-o', 'HostKeyAlgorithms=ssh-ed25519',
-  '-o', 'HostKeyAlias=192.168.1.10',
-  '-o', 'UserKnownHostsFile=C:/Users/Administrator/.ssh/known_hosts',
+  '-o', 'StrictHostKeyChecking=accept-new', '-o', 'HostKeyAlgorithms=ssh-ed25519',
+  '-o', 'HostKeyAlias=$LaptopHost',
+  '-o', 'UserKnownHostsFile=C:/Users/YOURNAME/.ssh/known_hosts',
   '-i', $Key
 )
-$RemoteRoot = 'C:\Users\WJX\AppData\Local\TaskMesh\netclass'
-$ExtRoot = 'C:\Users\WJX\AppData\Roaming\OCS Desktop\downloads\extensions\netclass-loader'
+$RemoteRoot = 'C:\Users\YOURNAME\AppData\Local\TaskMesh\netclass'
+$ExtRoot = 'C:\Users\YOURNAME\AppData\Roaming\OCS Desktop\downloads\extensions\netclass-loader'
 $Ssh = 'C:\Windows\System32\OpenSSH\ssh.exe'
 $Scp = 'C:\Windows\System32\OpenSSH\scp.exe'
 
@@ -59,7 +63,7 @@ switch ($Action) {
       $local = $pair.Split('|')[0]
       $remote = $pair.Split('|')[1]
       if (-not (Test-Path -LiteralPath $local)) { Write-Warning ("missing local file: " + $local); continue }
-      $tmp = '/C:/Users/WJX/AppData/Local/Temp/netclass-' + [IO.Path]::GetFileName($remote)
+      $tmp = '/C:/Users/YOURNAME/AppData/Local/Temp/netclass-' + [IO.Path]::GetFileName($remote)
       & $Scp @SshOpts $local "$LaptopUser@$LaptopHost`:$tmp" | Out-Null
       $tmpWin = $tmp -replace '^/C:', 'C:'
       Invoke-RemotePs "Move-Item -Force -LiteralPath '$tmpWin' -Destination '$remote'; 'moved'"

@@ -33,7 +33,7 @@
     "host": "col.ccjyxy.cn",
     "cdp": 9228,
     "tunnel": {
-      "target": "WJX@192.168.1.8",
+      "target": null,
       "remoteHost": "127.0.0.1",
       "remotePort": 9228
     },
@@ -154,7 +154,7 @@
     "host": "mooc1.chaoxing.com",
     "cdp": 9227,
     "tunnel": {
-      "target": "WJX@192.168.1.8",
+      "target": null,
       "remoteHost": "127.0.0.1",
       "remotePort": 9227
     },
@@ -265,7 +265,7 @@
     "host": "edu.shengshengketang.com",
     "cdp": 9224,
     "tunnel": {
-      "target": "WJX@192.168.1.8",
+      "target": null,
       "remoteHost": "127.0.0.1",
       "remotePort": 9224
     },
@@ -337,7 +337,7 @@
     "host": "studyvideoh5.zhihuishu.com",
     "cdp": 9229,
     "tunnel": {
-      "target": "WJX@192.168.1.8",
+      "target": null,
       "remoteHost": "127.0.0.1",
       "remotePort": 9229
     },
@@ -410,7 +410,7 @@
     "host": "study.bjqiyang.com",
     "cdp": 9225,
     "tunnel": {
-      "target": "WJX@192.168.1.8",
+      "target": null,
       "remoteHost": "127.0.0.1",
       "remotePort": 9225
     },
@@ -476,7 +476,7 @@
     "host": "tea.webtrn.cn",
     "cdp": 9226,
     "tunnel": {
-      "target": "WJX@192.168.1.8",
+      "target": null,
       "remoteHost": "127.0.0.1",
       "remotePort": 9226
     },

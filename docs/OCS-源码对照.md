@@ -1,7 +1,7 @@
 # OCS（全能脚本）源码对照文档
 
 > **用途**：把 OCS Desktop 内置的网课适配器源码整理成"照着就能复刻"的参考。
-> **来源**：笔记本 `C:\Users\WJX\AppData\Local\Programs\OCS Desktop\resources\app\lib\src\scripts\`（OCS Desktop 安装目录里的 Electron 应用源码，未混淆）。
+> **来源**：笔记本 `C:\Users\YOURNAME\AppData\Local\Programs\OCS Desktop\resources\app\lib\src\scripts\`（OCS Desktop 安装目录里的 Electron 应用源码，未混淆）。
 > **本地副本**：`reference/ocs-scripts/`（**已 gitignore，绝不入库**）。
 > **⚠️ 合规**：这是第三方商业软件源码，只作**思路与选择器对照**；我们自己的实现必须重写代码，不复粘。
 

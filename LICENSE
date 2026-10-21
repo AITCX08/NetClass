@@ -1,0 +1,33 @@
+MIT License
+
+Copyright (c) 2026 AITCX08
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+使用声明（非许可证条款，仅说明设计边界）
+
+本项目的自动化能力仅用于**用户本人已合法持有的账号**上，处理**用户本人有权访问的课程**。
+仓库不包含任何账号、密码、密钥；账号池只存 `secretRef`（如 `env:CC_PASS`）。
+
+以下能力**本项目不提供、也不打算提供**：
+- 绕过验证码 / 人脸识别 / 短信验证
+- 代考、伪造学时、伪造学习记录
+- 批量注册账号、盗用他人账号

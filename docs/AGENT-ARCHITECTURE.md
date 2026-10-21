@@ -106,7 +106,7 @@
     "label": "长春教师培训",
     "host": "col.ccjyxy.cn",
     "cdp": 9228,
-    "tunnel": { "target": "WJX@192.168.1.8", "remotePort": 9228 },
+    "tunnel": { "target": "user@host", "remotePort": 9228 },
 
     // ★ 能力声明：决定 nl-dispatch 能不能把任务派给它
     "capabilities": ["video"],           // video|quiz|homework|post|exam

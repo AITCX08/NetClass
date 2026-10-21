@@ -1,0 +1,57 @@
+{
+  "name": "netclass",
+  "version": "0.5.8",
+  "description": "网课自动化 Agent —— 数据驱动平台注册表 + 任务编排 + 自然语言派单 + 登录态探测；把「网页自动化」做成工程化系统",
+  "type": "module",
+  "private": false,
+  "license": "MIT",
+  "author": "AITCX08",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AITCX08/NetClass.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "browser-automation",
+    "cdp",
+    "chrome-devtools-protocol",
+    "course-automation",
+    "userscript",
+    "agent",
+    "playwright-alternative"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:loader": "node scripts/build-loader.mjs",
+    "build:all": "node scripts/build.mjs && node scripts/build-loader.mjs",
+
+    "deploy": "pwsh -NoProfile -File scripts/netclass-deploy.ps1 -Action push",
+    "deploy:status": "pwsh -NoProfile -File scripts/netclass-deploy.ps1 -Action status",
+
+    "validate": "node scripts/registry.mjs validate",
+    "list": "node scripts/registry.mjs list",
+    "ports": "node scripts/registry.mjs ports",
+    "procs": "node scripts/registry.mjs procs",
+
+    "probe": "node scripts/auth.mjs probe",
+    "orchestrate": "node scripts/orchestrator.mjs list",
+    "dispatch": "node scripts/nl-dispatch.mjs --dry",
+
+    "qr": "node scripts/set-qr.mjs --status",
+    "qr:set": "node scripts/set-qr.mjs",
+
+    "devmode": "node scripts/ensure-devmode.mjs",
+    "supervise": "node scripts/supervisor.mjs --interval=60"
+  },
+  "files": [
+    "scripts/",
+    "userscript/",
+    "loader-ext/",
+    "config/",
+    "docs/",
+    "README.md",
+    "LICENSE"
+  ]
+}

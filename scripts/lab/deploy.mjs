@@ -15,19 +15,19 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..');
 const TM_ID = 'dhdgffkkebhmkfjojejmpbldmpobfkfo';
-const LAPTOP = 'WJX@192.168.1.8';
-const SSH_KEY = 'C:/Users/Administrator/.ssh/taskmesh_windows_laptop_ed25519';
-const CHROME = 'C:\\Users\\WJX\\AppData\\Local\\Programs\\OCS Desktop\\resources\\bin\\chrome\\chrome\\chrome.exe';
-const EXT_TM = 'C:/Users/WJX/AppData/Roaming/OCS Desktop/downloads/extensions/tampermonkey';
-const PREF_ROOT = 'C:\\Users\\WJX\\AppData\\Roaming\\OCS Desktop\\userDataDirs';
-const WORK = 'C:\\Users\\WJX\\AppData\\Local\\TaskMesh\\netclass';
+const LAPTOP = 'user@host';
+const SSH_KEY = 'C:/Users/YOURNAME/.ssh/id_ed25519';
+const CHROME = 'C:\\Users\\YOURNAME\\AppData\\Local\\Programs\\OCS Desktop\\resources\\bin\\chrome\\chrome\\chrome.exe';
+const EXT_TM = 'C:/Users/YOURNAME/AppData/Roaming/OCS Desktop/downloads/extensions/tampermonkey';
+const PREF_ROOT = 'C:\\Users\\YOURNAME\\AppData\\Roaming\\OCS Desktop\\userDataDirs';
+const WORK = 'C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass';
 
 const SSH = [
   '-T', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'PasswordAuthentication=no',
   '-o', 'PreferredAuthentications=publickey', '-o', 'ConnectTimeout=8', '-o', 'ConnectionAttempts=1',
   '-o', 'StrictHostKeyChecking=yes', '-o', 'HostKeyAlgorithms=ssh-ed25519',
-  '-o', 'HostKeyAlias=192.168.1.10',
-  '-o', 'UserKnownHostsFile=C:/Users/Administrator/.ssh/known_hosts',
+  '-o', 'HostKeyAlias=192.168.1.100',
+  '-o', 'UserKnownHostsFile=C:/Users/YOURNAME/.ssh/known_hosts',
   '-i', SSH_KEY, LAPTOP
 ];
 const sleep = ms => new Promise(r => setTimeout(r, ms));

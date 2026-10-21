@@ -12,7 +12,7 @@
   // 热重载时先回收上一个实例
   try { window.NetClass && window.NetClass.dispose && window.NetClass.dispose(); } catch (_) { }
 
-  const VERSION = '0.5.6';
+  const VERSION = '0.5.8';
   const NS = '[NetClass]';
   // ★ 2026-10-20：品牌/引流配置（userscript/brand.js 由 build.mjs 内联到此处之前）。
   //   二维码是 base64 内联的（userscript 读不到本地文件）；留空则该位置不渲染，不会出破图。
@@ -31,12 +31,17 @@
   function brandBlock() {
     const hasQr = !!(BRAND.wechatQr || BRAND.donateQr || BRAND.sponsorUrl);
     if (!hasQr && !BRAND.repo) return '';
-    let open = true;
-    try { open = localStorage.getItem('netclass.brandOpen') === '1'; } catch (_) { }
-    if (BRAND.brandCollapsedByDefault) open = open;   // 已持久化过就按持久化
+    // ★ 2026-10-20：默认展开由 brandCollapsedByDefault 决定（引流位要直接可见）。
+    //   用户的点击选择持久化在 localStorage，优先于默认值。
+    let open = !BRAND.brandCollapsedByDefault;
+    try {
+      const saved = localStorage.getItem('netclass.brandOpen');
+      if (saved === '1') open = true;
+      else if (saved === '0') open = false;
+    } catch (_) { }
     const qrCell = (uri, label, hint) => uri
       ? '<div style="text-align:center;flex:1">' +
-      `<img src="${uri}" style="width:84px;height:84px;border-radius:6px;background:#fff;padding:3px;display:block;margin:0 auto 3px" alt="${label}">` +
+      `<img src="${uri}" style="width:110px;height:110px;border-radius:6px;background:#fff;padding:3px;display:block;margin:0 auto 3px" alt="${label}">` +
       `<div style="font-size:11px;opacity:.9">${label}</div>` +
       (hint ? `<div style="font-size:10px;opacity:.6">${hint}</div>` : '') +
       '</div>'

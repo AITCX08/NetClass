@@ -2,9 +2,9 @@
  * netclass-ctl.mjs — NetClass 部署控制（PC 侧 → 笔记本 OCS 浏览器）
  *
  * 前置：PC 侧起好 SSH 转发
- *   ssh -N -i C:/Users/Administrator/.ssh/taskmesh_windows_laptop_ed25519 \
- *       -o HostKeyAlias=192.168.1.10 -o UserKnownHostsFile=C:/Users/Administrator/.ssh/known_hosts \
- *       -L 9224:127.0.0.1:9224 WJX@192.168.1.8
+ *   ssh -N -i C:/Users/YOURNAME/.ssh/id_ed25519 \
+ *       -o HostKeyAlias=192.168.1.1000 -o UserKnownHostsFile=C:/Users/YOURNAME/.ssh/known_hosts \
+ *       -L 9224:127.0.0.1:9224 user@host
  * 端口约定：SSH 转发 9224 → 笔记本 Chrome 调试端口 9224
  *
  * 用法：
@@ -26,11 +26,11 @@ const PORT = 9224;
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..');
 
-const LAPTOP = 'WJX@192.168.1.8';
-const SSH_KEY = 'C:/Users/Administrator/.ssh/taskmesh_windows_laptop_ed25519';
-const CHROME = 'C:\\Users\\WJX\\AppData\\Local\\Programs\\OCS Desktop\\resources\\bin\\chrome\\chrome\\chrome.exe';
-const EXT_TAMPERMONKEY = 'C:/Users/WJX/AppData/Roaming/OCS Desktop/downloads/extensions/tampermonkey';
-const PROFILE_ROOT = 'C:\\Users\\WJX\\AppData\\Roaming\\OCS Desktop\\userDataDirs';
+const LAPTOP = 'user@host';
+const SSH_KEY = 'C:/Users/YOURNAME/.ssh/id_ed25519';
+const CHROME = 'C:\\Users\\YOURNAME\\AppData\\Local\\Programs\\OCS Desktop\\resources\\bin\\chrome\\chrome\\chrome.exe';
+const EXT_TAMPERMONKEY = 'C:/Users/YOURNAME/AppData/Roaming/OCS Desktop/downloads/extensions/tampermonkey';
+const PROFILE_ROOT = 'C:\\Users\\YOURNAME\\AppData\\Roaming\\OCS Desktop\\userDataDirs';
 const TM_ID = 'dhdgffkkebhmkfjojejmpbldmpobfkfo';
 const SHELL_LOCAL = join(REPO, 'userscript', 'netclass.shell.user.js');
 
@@ -38,8 +38,8 @@ const SSH_ARGS = [
   '-T', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'PasswordAuthentication=no',
   '-o', 'PreferredAuthentications=publickey', '-o', 'ConnectTimeout=8', '-o', 'ConnectionAttempts=1',
   '-o', 'StrictHostKeyChecking=yes', '-o', 'HostKeyAlgorithms=ssh-ed25519',
-  '-o', 'HostKeyAlias=192.168.1.10',
-  '-o', 'UserKnownHostsFile=C:/Users/Administrator/.ssh/known_hosts',
+  '-o', 'HostKeyAlias=192.168.1.1000',
+  '-o', 'UserKnownHostsFile=C:/Users/YOURNAME/.ssh/known_hosts',
   '-i', SSH_KEY, LAPTOP
 ];
 
@@ -63,10 +63,10 @@ function psFile(code, timeout = 240000) {
   const chunk = 1200;
   const parts = [];
   for (let i = 0; i < b64.length; i += chunk) parts.push(b64.slice(i, i + chunk));
-  const winPath = 'C:\\Users\\WJX\\AppData\\Local\\TaskMesh\\netclass\\_task.ps1';
+  const winPath = 'C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass\\_task.ps1';
 
   // 第 1 步：重置目标文件（ASCII 避免 BOM 污染 base64）
-  ps(`New-Item -ItemType Directory -Force -Path 'C:\\Users\\WJX\\AppData\\Local\\TaskMesh\\netclass' | Out-Null; Set-Content -Path '${winPath}' -Value '' -Encoding ASCII; 'reset'`, 30000);
+  ps(`New-Item -ItemType Directory -Force -Path 'C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass' | Out-Null; Set-Content -Path '${winPath}' -Value '' -Encoding ASCII; 'reset'`, 30000);
 
   // 第 2 步：分块以 base64 追加（ASCII、无换行）
   for (const part of parts) {
@@ -189,11 +189,11 @@ async function cmdRelaunch({ profile, url, withExtension = true, port = PORT }) 
   ].filter(x => x !== null).join('\r\n');
 
   const b64Lines = batch.split('\r\n').map(l => Buffer.from(l, 'utf8').toString('base64'));
-  const winBat = `C:\\Users\\WJX\\AppData\\Local\\TaskMesh\\netclass\\launch-${short}.bat`;
+  const winBat = `C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass\\launch-${short}.bat`;
 
   // 先把 batch 逐行以 base64 落盘到 lines.b64（ASCII-only，绕开所有引号/编码问题）
-  const b64File = `C:\\Users\\WJX\\AppData\\Local\\TaskMesh\\netclass\\lines-${short}.b64`;
-  ps(`New-Item -ItemType Directory -Force -Path 'C:\\Users\\WJX\\AppData\\Local\\TaskMesh\\netclass' | Out-Null; Set-Content -LiteralPath '${b64File}' -Value '' -Encoding ASCII; 'reset'`, 30000);
+  const b64File = `C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass\\lines-${short}.b64`;
+  ps(`New-Item -ItemType Directory -Force -Path 'C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass' | Out-Null; Set-Content -LiteralPath '${b64File}' -Value '' -Encoding ASCII; 'reset'`, 30000);
   for (const line of b64Lines) {
     ps(`Add-Content -LiteralPath '${b64File}' -Value '${line}' -Encoding ASCII`, 30000);
   }
@@ -201,7 +201,7 @@ async function cmdRelaunch({ profile, url, withExtension = true, port = PORT }) 
   console.log('b64 lines written: ' + lineCount + '/' + b64Lines.length);
 
   const code = `
-$root = 'C:\\Users\\WJX\\AppData\\Local\\TaskMesh\\netclass'
+$root = 'C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass'
 $prof = '${PROFILE_ROOT}\\${profile}'
 Write-Output ('profile exists: ' + (Test-Path $prof))
 $killed = 0
@@ -376,10 +376,10 @@ async function cmdShow({ profile, port = PORT, url, start = true }) {
   if (!profile) throw new Error('需要 --profile <uid|test-profile>');
   const isTest = profile === 'test-profile';
   const profDir = isTest
-    ? 'C:\\Users\\WJX\\AppData\\Local\\TaskMesh\\netclass\\test-profile'
+    ? 'C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass\\test-profile'
     : `${PROFILE_ROOT}\\${profile}`;
   const tag = isTest ? 'test' : String(profile).slice(0, 8);
-  const winDir = 'C:\\Users\\WJX\\AppData\\Local\\TaskMesh\\netclass';
+  const winDir = 'C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass';
 
   // 批处理内容全部由 Node 生成（CRLF 绝不会丢）
   const cli = [

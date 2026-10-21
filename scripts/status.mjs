@@ -28,10 +28,10 @@ const SSH_ARGS = [
   '-T', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'PasswordAuthentication=no',
   '-o', 'PreferredAuthentications=publickey', '-o', 'ConnectTimeout=8', '-o', 'ConnectionAttempts=1',
   '-o', 'StrictHostKeyChecking=yes', '-o', 'HostKeyAlgorithms=ssh-ed25519',
-  '-o', 'HostKeyAlias=192.168.1.10',
-  '-o', 'UserKnownHostsFile=C:/Users/Administrator/.ssh/known_hosts',
-  '-i', 'C:/Users/Administrator/.ssh/taskmesh_windows_laptop_ed25519',
-  'WJX@192.168.1.8'
+  '-o', 'HostKeyAlias=192.168.1.1000',
+  '-o', 'UserKnownHostsFile=C:/Users/YOURNAME/.ssh/known_hosts',
+  '-i', 'C:/Users/YOURNAME/.ssh/id_ed25519',
+  'user@host'
 ];
 
 const warnings = [];

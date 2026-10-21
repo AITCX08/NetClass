@@ -18,22 +18,22 @@ const argv = process.argv.slice(2);
 for (let i = 0; i < argv.length; i++) if (argv[i].startsWith('--')) A[argv[i].slice(2)] = (argv[i + 1] && !argv[i + 1].startsWith('--')) ? argv[++i] : true;
 const ACTION = A.action || 'status';
 const SCRIPT_ID = Number(A.id || 990000000001);
-const SCRIPT_URL = A.url || 'C:/Users/WJX/AppData/Local/TaskMesh/netclass/netclass.user.js';
+const SCRIPT_URL = A.url || 'C:/Users/YOURNAME/AppData/Local/TaskMesh/netclass/netclass.user.js';
 const SCRIPT_NAME = 'NetClass 网课自动处理';
 
-const LAPTOP = 'WJX@192.168.1.8';
-const SSH_KEY = 'C:/Users/Administrator/.ssh/taskmesh_windows_laptop_ed25519';
+const LAPTOP = 'user@host';
+const SSH_KEY = 'C:/Users/YOURNAME/.ssh/id_ed25519';
 const SSH = [
   '-T', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'PasswordAuthentication=no',
   '-o', 'PreferredAuthentications=publickey', '-o', 'ConnectTimeout=8', '-o', 'ConnectionAttempts=1',
   '-o', 'StrictHostKeyChecking=yes', '-o', 'HostKeyAlgorithms=ssh-ed25519',
-  '-o', 'HostKeyAlias=192.168.1.10',
-  '-o', 'UserKnownHostsFile=C:/Users/Administrator/.ssh/known_hosts',
+  '-o', 'HostKeyAlias=192.168.1.100',
+  '-o', 'UserKnownHostsFile=C:/Users/YOURNAME/.ssh/known_hosts',
   '-i', SSH_KEY, LAPTOP
 ];
 function ps(code, timeout = 60000) {
   const b64 = Buffer.from(code, 'utf16le').toString('base64');
-  const f = 'C:\\Users\\WJX\\AppData\\Local\\TaskMesh\\netclass\\ocsreg.b64';
+  const f = 'C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass\\ocsreg.b64';
   const chunk = 1200;
   const run = (cmd, t) => {
     try {
@@ -46,21 +46,21 @@ function ps(code, timeout = 60000) {
     return run(`powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${b}`, t);
   };
   // 分块传输，避免命令行过长
-  one(`New-Item -ItemType Directory -Force -Path 'C:\\Users\\WJX\\AppData\\Local\\TaskMesh\\netclass' | Out-Null; Set-Content -LiteralPath '${f}' -Value '' -Encoding ASCII; 'ok'`, 30000);
+  one(`New-Item -ItemType Directory -Force -Path 'C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass' | Out-Null; Set-Content -LiteralPath '${f}' -Value '' -Encoding ASCII; 'ok'`, 30000);
   for (let i = 0; i < b64.length; i += chunk) {
     one(`Add-Content -LiteralPath '${f}' -Value '${b64.slice(i, i + chunk)}' -Encoding ASCII -NoNewline`, 30000);
   }
   return one(`
 $b = (Get-Content -LiteralPath '${f}' -Raw) -replace '[^A-Za-z0-9+/=]',''
 $c = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($b))
-$exe = 'C:\\Users\\WJX\\AppData\\Local\\TaskMesh\\netclass\\ocsreg-exec.ps1'
+$exe = 'C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass\\ocsreg-exec.ps1'
 [IO.File]::WriteAllText($exe, $c, (New-Object Text.UTF8Encoding($false)))
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 & powershell -NoProfile -ExecutionPolicy Bypass -File $exe
 `, timeout);
 }
 
-const CONFIG = 'C:/Users/WJX/AppData/Roaming/OCS Desktop/config.json';
+const CONFIG = 'C:/Users/YOURNAME/AppData/Roaming/OCS Desktop/config.json';
 
 const psCode = `
 $ErrorActionPreference = 'Stop'

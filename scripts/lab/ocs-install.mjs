@@ -9,14 +9,14 @@
  *
  * 用法：
  *   node ocs-install.mjs --port 9225
- *   node ocs-install.mjs --port 9224 --url file:///C:/Users/WJX/AppData/Local/TaskMesh/netclass/netclass.user.js
+ *   node ocs-install.mjs --port 9224 --url file:///C:/Users/YOURNAME/AppData/Local/TaskMesh/netclass/netclass.user.js
  */
 const A = {};
 const argv = process.argv.slice(2);
 for (let i = 0; i < argv.length; i++) if (argv[i].startsWith('--')) A[argv[i].slice(2)] = (argv[i + 1] && !argv[i + 1].startsWith('--')) ? argv[++i] : true;
 const PORT = Number(A.port || 9225);
 const TM_ID = 'dhdgffkkebhmkfjojejmpbldmpobfkfo';
-const SCRIPT_URL = A.url || 'file:///C:/Users/WJX/AppData/Local/TaskMesh/netclass/netclass.user.js';
+const SCRIPT_URL = A.url || 'file:///C:/Users/YOURNAME/AppData/Local/TaskMesh/netclass/netclass.user.js';
 const SCRIPT_NAME = A.name || 'NetClass';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const TIMEOUT = Number(A.timeout || 60);

@@ -17,12 +17,12 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { argv, exit } from 'node:process';
 
-const LAPTOP = 'WJX@192.168.1.8';
-const KEY = 'C:/Users/Administrator/.ssh/taskmesh_windows_laptop_ed25519';
-const HOST_KEY_ALIAS = '192.168.1.10';
-const CHROME = 'C:\\Users\\WJX\\AppData\\Local\\Programs\\OCS Desktop\\resources\\bin\\chrome\\chrome\\chrome.exe';
-const EXT_DIR = 'C:/Users/WJX/AppData/Roaming/OCS Desktop/downloads/extensions/tampermonkey';
-const PROFILE_ROOT = 'C:\\Users\\WJX\\AppData\\Roaming\\OCS Desktop\\userDataDirs';
+const LAPTOP = 'user@host';
+const KEY = 'C:/Users/YOURNAME/.ssh/id_ed25519';
+const HOST_KEY_ALIAS = '192.168.1.1000';
+const CHROME = 'C:\\Users\\YOURNAME\\AppData\\Local\\Programs\\OCS Desktop\\resources\\bin\\chrome\\chrome\\chrome.exe';
+const EXT_DIR = 'C:/Users/YOURNAME/AppData/Roaming/OCS Desktop/downloads/extensions/tampermonkey';
+const PROFILE_ROOT = 'C:\\Users\\YOURNAME\\AppData\\Roaming\\OCS Desktop\\userDataDirs';
 const PORT = 9223;
 
 const SSH_ARGS = [
@@ -30,7 +30,7 @@ const SSH_ARGS = [
   '-o', 'PreferredAuthentications=publickey', '-o', 'ConnectTimeout=8', '-o', 'ConnectionAttempts=1',
   '-o', 'StrictHostKeyChecking=yes', '-o', 'HostKeyAlgorithms=ssh-ed25519',
   '-o', `HostKeyAlias=${HOST_KEY_ALIAS}`,
-  '-o', 'UserKnownHostsFile=C:/Users/Administrator/.ssh/known_hosts',
+  '-o', 'UserKnownHostsFile=C:/Users/YOURNAME/.ssh/known_hosts',
   '-i', KEY, LAPTOP
 ];
 

@@ -30,7 +30,7 @@ cc-auto.mjs           长春驱动（主管 watchOnly 已撤，会保活）
 - **计划任务**：`NetClass-Supervisor`（Ready，**唯一启动器**）· `NetClass-CxDriver`（Disabled，因用户暂停学习通）
 - **本机零弹窗**：所有启动走 `Start-Process -WindowStyle Hidden` / VBS 包装
 
-**端口**：9224 shengsheng · 9227 学习通 · 9228 长春 · 9229 知到（都在笔记本 `WJX@192.168.1.8`，通过 SSH 隧道）
+**端口**：9224 shengsheng · 9227 学习通 · 9228 长春 · 9229 知到（都在笔记本 `user@host`，通过 SSH 隧道）
 
 ---
 

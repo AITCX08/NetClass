@@ -9,7 +9,7 @@
 
 ## 0. 三分钟上手
 
-**这是什么**：跑在用户 Windows 笔记本（`192.168.1.8`，用户 `WJX`）上的浏览器自动化，
+**这是什么**：跑在用户 Windows 笔记本（`<浏览器主机>`，用户 `YOURNAME`）上的浏览器自动化，
 用来在两个网课平台上自动播放课程、处理随堂题、逐级推进课程。
 
 **代码在哪**：
@@ -215,9 +215,9 @@ node scripts\nc.mjs run --file <列目录并 Get-FileHash 的脚本>
 ### 3.2 SSH 连接参数
 
 ```
-主机    WJX@192.168.1.8
-密钥    C:/Users/Administrator/.ssh/taskmesh_windows_laptop_ed25519
-特殊    HostKeyAlias=192.168.1.10（known_hosts 里按这个名记的）
+主机    user@host
+密钥    C:/Users/YOURNAME/.ssh/id_ed25519
+特殊    HostKeyAlias=192.168.1.100（known_hosts 里按这个名记的）
 ```
 
 `scripts/nc.mjs` 已内置这些参数，不用手写。

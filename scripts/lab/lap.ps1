@@ -14,14 +14,14 @@ $ErrorActionPreference = 'Continue'
 if ($DebugInfo) {
   Write-Host ("file='" + $File + "' codeLen=" + ($(if ($Code) { $Code.Length } else { 0 })))
 }
-$Key = 'C:/Users/Administrator/.ssh/taskmesh_windows_laptop_ed25519'
+$Key = 'C:/Users/YOURNAME/.ssh/id_ed25519'
 $SshOpts = @(
   '-T', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'PasswordAuthentication=no',
   '-o', 'PreferredAuthentications=publickey', '-o', 'ConnectTimeout=8', '-o', 'ConnectionAttempts=1',
   '-o', 'StrictHostKeyChecking=yes', '-o', 'HostKeyAlgorithms=ssh-ed25519',
-  '-o', 'HostKeyAlias=192.168.1.10',
-  '-o', 'UserKnownHostsFile=C:/Users/Administrator/.ssh/known_hosts',
-  '-i', $Key, 'WJX@192.168.1.8'
+  '-o', 'HostKeyAlias=192.168.1.100',
+  '-o', 'UserKnownHostsFile=C:/Users/YOURNAME/.ssh/known_hosts',
+  '-i', $Key, 'user@host'
 )
 $Ssh = 'C:\Windows\System32\OpenSSH\ssh.exe'
 
@@ -36,8 +36,8 @@ $bytes = [Text.Encoding]::Unicode.GetBytes($Code)
 $b64 = [Convert]::ToBase64String($bytes)
 $chunk = 1200
 $winTmp = "$env:TEMP\nc-chunks.txt"
-$winWin = 'C:\Users\WJX\AppData\Local\Temp\nc-chunks.txt'
-$winExe = 'C:\Users\WJX\AppData\Local\Temp\nc-run.ps1'
+$winWin = 'C:\Users\YOURNAME\AppData\Local\Temp\nc-chunks.txt'
+$winExe = 'C:\Users\YOURNAME\AppData\Local\Temp\nc-run.ps1'
 
 function RemotePs([string]$c) {
   $b = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($c))

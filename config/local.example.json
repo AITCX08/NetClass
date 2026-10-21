@@ -1,0 +1,42 @@
+# NetClass 本机配置示例
+#
+# 复制成 config/local.example.json → 改名 config/local.json 后按你的环境填。
+# config/local.json 已在 .gitignore 里（不会入库）。
+#
+# ★ 为什么单独抽一个文件：
+#   浏览器在哪台机器、CDP 端口映射到哪、SSH 怎么连 —— 这些是「环境」不是「代码」。
+#   硬编码进 platforms.json / 部署脚本会导致别人 clone 下来完全跑不通，也会暴露内网拓扑。
+
+{
+  "_comment": "把本文件复制为 config/local.json 并填上你自己的值", 
+
+  "ssh": {
+    "target": "user@192.168.1.1000",
+    "port": 22,
+    "keyPath": "C:/Users/YOURNAME/.ssh/id_ed25519",
+    "hostKeyAlias": "192.168.1.1000",
+    "knownHostsFile": "C:/Users/YOURNAME/.ssh/known_hosts",
+    "_note": "浏览器如果在同一台机器上，把 ssh.target 留空即可（走本机直连）"
+  },
+
+  "browser": {
+    "remoteRoot": "C:/Users/YOURNAME/AppData/Local/TaskMesh/netclass",
+    "extRoot": "C:/Users/YOURNAME/AppData/Roaming/OCS Desktop/downloads/extensions/netclass-loader",
+    "_note": "userscript / loader 部署到浏览器所在机器的哪个目录"
+  },
+
+  "cdp": {
+    "_note": "CDP 端口映射：本机端口 → 浏览器所在机器的端口",
+    "9224": 9224,
+    "9227": 9227,
+    "9228": 9228,
+    "9229": 9229
+  },
+
+  "brand": {
+    "_note": "品牌/引流位（userscript/brand.js 已内联；这里只是留档，改图请用 scripts/set-qr.mjs）",
+    "wechatQrSrc": "userscript/assets/wechat.jpg",
+    "donateQrSrc": "userscript/assets/donate.png",
+    "sponsorUrl": ""
+  }
+}

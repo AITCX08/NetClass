@@ -68,7 +68,7 @@ ca.close();
 // B) 试 file:// 方案
 console.log('');
 console.log('=== B. 试 file:// 直接打开本地脚本 ===');
-const fileUrl = 'file:///C:/Users/WJX/AppData/Local/TaskMesh/netclass/netclass.user.js';
+const fileUrl = 'file:///C:/Users/YOURNAME/AppData/Local/TaskMesh/netclass/netclass.user.js';
 const b = await (await fetch(`http://127.0.0.1:${PORT}/json/new?${encodeURIComponent(fileUrl)}`, { method: 'PUT' })).json();
 await sleep(6000);
 const tabs = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();

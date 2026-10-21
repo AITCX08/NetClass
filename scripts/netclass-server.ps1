@@ -5,7 +5,7 @@
     2) /App.js            → 实现模块（已装脚本运行时可热加载最新版，不必等下次安装）
     3) /ingest            → 接收脚本回传的探测/结果数据
     4) /ping, /status     → 健康检查
-  目录约定（部署到笔记本）：C:\Users\WJX\AppData\Local\TaskMesh\netclass\
+  目录约定（部署到笔记本）：C:\Users\YOURNAME\AppData\Local\TaskMesh\netclass\
       server.ps1 / App.js / netclass.user.js / logs\
   仅监听 127.0.0.1:17800，不对外网开放。
 #>
