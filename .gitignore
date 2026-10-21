@@ -30,3 +30,5 @@ runs/
 config/local.json
 .env
 
+config/local.json.bak-*
+

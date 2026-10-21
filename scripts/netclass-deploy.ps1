@@ -25,16 +25,17 @@ if (Test-Path $LocalPath) { try { $LocalCfg = Get-Content $LocalPath -Raw | Conv
 $LaptopHost = if ($LocalCfg -and $LocalCfg.ssh.target) { ($LocalCfg.ssh.target -split '@')[-1] } else { 'YOUR_BROWSER_HOST' }
 $LaptopUser = if ($LocalCfg -and $LocalCfg.ssh.target) { ($LocalCfg.ssh.target -split '@')[0] } else { 'YOURNAME' }
 $Key = if ($LocalCfg -and $LocalCfg.ssh.keyPath) { $LocalCfg.ssh.keyPath } else { 'C:/Users/YOURNAME/.ssh/id_ed25519' }
+$KnownHosts = if ($LocalCfg -and $LocalCfg.ssh.knownHostsFile) { $LocalCfg.ssh.knownHostsFile } else { 'C:/Users/YOURNAME/.ssh/known_hosts' }
 $SshOpts = @(
   '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'PasswordAuthentication=no',
   '-o', 'PreferredAuthentications=publickey', '-o', 'ConnectTimeout=8', '-o', 'ConnectionAttempts=1',
   '-o', 'StrictHostKeyChecking=accept-new', '-o', 'HostKeyAlgorithms=ssh-ed25519',
-  '-o', 'HostKeyAlias=$LaptopHost',
-  '-o', 'UserKnownHostsFile=C:/Users/YOURNAME/.ssh/known_hosts',
+  '-o', ('HostKeyAlias=' + $LaptopHost),
+  '-o', ('UserKnownHostsFile=' + $KnownHosts),
   '-i', $Key
 )
-$RemoteRoot = 'C:\Users\YOURNAME\AppData\Local\TaskMesh\netclass'
-$ExtRoot = 'C:\Users\YOURNAME\AppData\Roaming\OCS Desktop\downloads\extensions\netclass-loader'
+$RemoteRoot = if ($LocalCfg -and $LocalCfg.browser.remoteRoot) { $LocalCfg.browser.remoteRoot } else { 'C:\Users\YOURNAME\AppData\Local\TaskMesh\netclass' }
+$ExtRoot = if ($LocalCfg -and $LocalCfg.browser.extRoot) { $LocalCfg.browser.extRoot } else { 'C:\Users\YOURNAME\AppData\Roaming\OCS Desktop\downloads\extensions\netclass-loader' }
 $Ssh = 'C:\Windows\System32\OpenSSH\ssh.exe'
 $Scp = 'C:\Windows\System32\OpenSSH\scp.exe'
 
