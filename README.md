@@ -463,6 +463,7 @@ loggedIn / notLoggedIn / unreachable
 | [`docs/HANDOVER.md`](docs/HANDOVER.md) | **全平台病历本**：20+ 条坑，按症状索引 ★ |
 | [`docs/OCS-万能-源码逆向对照.md`](docs/OCS-万能-源码逆向对照.md) | 与两个成熟实现的对照分析 |
 | [`docs/FINAL-HANDOVER.md`](docs/FINAL-HANDOVER.md) | 交接模板（四平台达成度 / 恢复命令 / 教训）|
+| [`docs/TASKMESH-INTEGRATION.md`](docs/TASKMESH-INTEGRATION.md) | **与 TaskMesh 控制面集成契约**（status / logs / progress / restart，端口与任务名约定）|
 | `runs/p0-parity-check.mjs` | supervisor 数据驱动化的**等价性证明脚本** |
 
 ---
