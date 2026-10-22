@@ -1,0 +1,14 @@
+{
+  "engine": "chrome-for-testing",
+  "version": "137.0.7151.55",
+  "mirrors": [
+    "https://registry.npmmirror.com/-/binary/chrome-for-testing",
+    "https://storage.googleapis.com/chrome-for-testing-public"
+  ],
+  "expectedSize": {
+    "win64": 171065107
+  },
+  "allowFallback": true,
+  "autoUpdate": false,
+  "_note": "实测 2026-10-22：storage.googleapis.com 在国内不可达，所以 npmmirror 排第一。版本锁定 137.0.7151.55 —— 7 个平台全部在这个版本上验证过。autoUpdate 必须保持 false，升级要主动改这里并重测。"
+}

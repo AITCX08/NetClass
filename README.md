@@ -6,8 +6,11 @@
 > 页面内模块 + MV3 加载器 + 外部驱动器 + 自愈守护 + **一层真正的 Agent 编排**。
 > 让你在**几小时内**把一个全新平台接进来，而不是从零趟坑。
 >
-> **已适配**：学习通（超星）· 长春教师培训 · 生生课堂 · 智慧树知到 · 齐阳 · webtrn
+> **已适配**：学习通（超星）· 长春教师培训 · 生生课堂 · 智慧树知到 · 齐阳 · webtrn · 青海智慧教育
 > **适配一个新平台 ≈ 写一个 `ADAPTER_*` 对象 + 往 `config/platforms.json` 加一个块。**
+>
+> **不需要装 OCS。不需要装扩展。不需要开发者模式。**
+> 浏览器版本锁定（Chrome for Testing 137.0.7151.55），首次运行自动拉取，走国内镜像。
 
 ---
 
@@ -28,6 +31,93 @@
 | 记住/上传你的凭据 | 仓库与配置里永远没有密码字段 |
 
 **掉登录了怎么办？** `auth.ensure()` 会把登录页打开、打印提示、等最多 180 秒。
+
+---
+
+## 🚀 一键启动
+
+```bash
+# 1) 起一个实例（后台模式，窗口在屏幕外，不抢焦点）
+node scripts/netclass.mjs up --platform ccjyxy
+
+# 2) 第一次：把窗口摆到前台，你自己登录（我们不碰账号密码）
+node scripts/netclass.mjs up --platform ccjyxy --login
+
+# 3) 看所有实例
+node scripts/netclass.mjs ps
+```
+
+```
+ID              平台        端口    状态      任务/进度  PID     心跳
+--------------  --------  ----  ------  -----  ------  --------
+ccjyxy--a1b2    ccjyxy    9228  ▶ running  video 71.1/90  217036  12:03:21
+smartedu--c3d4  smartedu  9250  ⏸ idle     —      225112  12:03:18
+```
+
+### 它替你解决的三件事
+
+| 原本的坑 | 现在的做法 |
+|---|---|
+| 用户装了 360/QQ/搜狗这类魔改 Chromium，CDP 残缺 | **锁定 Chrome for Testing 137.0.7151.55**，首次运行自动拉（163MB，走国内镜像） |
+| MV3 的 `chrome.userScripts` 需要手动开「允许用户脚本」，CLI 改不了 | **改用 CDP `Page.addScriptToEvaluateOnNewDocument` 预注入**，零开关 |
+| 一个平台一个浏览器，多账号没法并行 | **一实例一 profile 一端口**，闸门默认 4 个并发，超出排队 |
+
+### 浏览器怎么来
+
+```bash
+node scripts/browser.mjs status      # 看当前用的哪个、版本、来源
+node scripts/browser.mjs install     # 下载 + 校验 + 解压（幂等）
+node scripts/browser.mjs which       # 报告最终会解析到哪个
+```
+
+**下载源顺序**（实测 2026-10：`storage.googleapis.com` 在国内不可达）：
+```
+registry.npmmirror.com  →  storage.googleapis.com
+```
+
+**校验链**（Google 不发布 per-file SHA256，所以用功能性验证）：
+```
+① 字节数 == 镜像目录给出的 size
+② zip 能解压
+③ 同目录的 <version>.manifest 文件名 == 锁定版本    ← 最硬
+④ SHA256 记进 cacheDir/sha256-<ver>.txt（TOFU）
+```
+
+**下载全部失败时**才降级到系统 Edge/Chrome/OCS，并打印 `⚠ 版本未锁定`。
+
+### 一份二进制，多开不吃多份
+
+```
+%LOCALAPPDATA%\NetClass\
+├── browser\137.0.7151.55\chrome-win64\chrome.exe   ← 一份，所有实例共用
+└── profiles\
+    ├── ccjyxy--a1b2\       ← 每个实例只管这个（几十 MB）
+    └── smartedu--c3d4\
+```
+
+### 三种显示模式
+
+| 模式 | 抢焦点 | 媒体栈 | 用在哪 |
+|---|---|---|---|
+| `headless` | 否 | 可能被节流 | 纯抓取 |
+| **`offscreen`（默认）** | 否 | 完整 | **正常跑课**（窗口在 -32000,-32000） |
+| `headed` | 是 | 完整 | 登录 / 人工验证 |
+
+> 实测：SSH 起的浏览器在 Session 0 没有可见窗口，CDP 照样工作、视频照样播。
+> **「看不见」不等于「跑不动」** —— 但完全 headless 确实可能被节流，所以默认走 offscreen。
+
+### 同平台多账号
+
+```bash
+# 在 master profile 里登录一次 → 关浏览器 → 复制出 N 份 → N 个实例并行
+node scripts/netclass.mjs up --platform ccjyxy --login   # 登录
+node scripts/netclass.mjs stop ccjyxy                    # 关掉
+# 复制 profile（或直接再 up 一次，会建新 profile，你在里面再登一次）
+node scripts/netclass.mjs up --platform ccjyxy
+```
+
+---
+
 登完自动继续；超时就明确报错停下 —— **绝不假装登录成功继续往下跑**。
 
 ```bash
@@ -240,23 +330,25 @@ node runs/p0-parity-check.mjs
 git clone https://github.com/AITCX08/NetClass.git
 cd NetClass
 
-# 1) 构建模块 + 加载器
-node scripts/build.mjs
-node scripts/build-loader.mjs
+# 一条龙：拉浏览器 + 构建 + 部署 + 自检
+node scripts/install.ps1
 
-# 2) 推到浏览器所在机器的部署目录
-pwsh -File scripts/netclass-deploy.ps1 -Action push
-
-# 3) 打开扩展「开发者模式」
-#    ★ MV3 的 chrome.userScripts 必须在开发者模式下才可用
-#    不开的话：注册静默失败，页面上什么都不出现（不报错）
-node scripts/ensure-devmode.mjs --port <调试端口>
-
-# 4) 校验注册表 + 起守护
-node scripts/registry.mjs validate
-node scripts/supervisor.mjs --interval=60
+# 或手动分步
+node scripts/browser.mjs install   # 1) 拉锁定版本的 Chrome for Testing（163MB，国内镜像）
+node scripts/build.mjs             # 2) 构建 userscript
+node scripts/netclass.mjs status   # 3) 自检：浏览器版本 / 并发 / 实例
 ```
 
+> **MV3 扩展那条路仍然可用，但不再是必需的。**
+> CDP `Page.addScriptToEvaluateOnNewDocument` 绕开了「允许用户脚本」那个 CLI 改不了的开关。
+> 详见 `docs/BROWSER.md` 与 `docs/INSTANCES.md`。
+>
+> 老环境要走扩展路线的话：
+> ```powershell
+> node scripts/build-loader.mjs
+> pwsh -File scripts/netclass-deploy.ps1 -Action push
+> node scripts/ensure-devmode.mjs --port <调试端口>   # 开发者模式 + 允许用户脚本
+> ```
 ### 第一次跑一个任务
 
 ```powershell

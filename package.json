@@ -26,24 +26,23 @@
     "build": "node scripts/build.mjs",
     "build:loader": "node scripts/build-loader.mjs",
     "build:all": "node scripts/build.mjs && node scripts/build-loader.mjs",
-
     "deploy": "pwsh -NoProfile -File scripts/netclass-deploy.ps1 -Action push",
     "deploy:status": "pwsh -NoProfile -File scripts/netclass-deploy.ps1 -Action status",
-
     "validate": "node scripts/registry.mjs validate",
     "list": "node scripts/registry.mjs list",
     "ports": "node scripts/registry.mjs ports",
     "procs": "node scripts/registry.mjs procs",
-
     "probe": "node scripts/auth.mjs probe",
     "orchestrate": "node scripts/orchestrator.mjs list",
     "dispatch": "node scripts/nl-dispatch.mjs --dry",
-
     "qr": "node scripts/set-qr.mjs --status",
     "qr:set": "node scripts/set-qr.mjs",
-
     "devmode": "node scripts/ensure-devmode.mjs",
-    "supervise": "node scripts/supervisor.mjs --interval=60"
+    "supervise": "node scripts/supervisor.mjs --interval=60",
+    "netclass": "node scripts/netclass.mjs",
+    "up": "node scripts/netclass.mjs up",
+    "ps": "node scripts/netclass.mjs ps",
+    "browser": "node scripts/browser.mjs"
   },
   "files": [
     "scripts/",

@@ -1133,3 +1133,123 @@ Page.reload() 之后：
 **结论**：页内 `setInterval` 守护（守倍速 / 守播放）**不能一次性注入**，必须由外部**周期性检查 context 并重注入**。本次做法：每 15 秒重连一次 CDP，遍历所有 context 找 video，`!(window.__guard && window.__guard.timer)` 就重注入。
 
 **③ 顺带**：右栏有**两个 `.res_body`** —— `querySelector(".res_body")` 拿到的是**章节树**不是资源面板，要用带 `.tab_ul` 的那个（或索引 `[1]`）。
+
+### 5.64 Windows 上拉起"要活过父进程"的浏览器：`detached` 不够，必须 WMI（2026-10-22）
+
+**症状**：`netclass up` 打印「✓ 实例已就绪 / PID 2xxxxx / CDP http://...」，但 6 秒后
+端口消失、进程不见。**看起来成功了，其实早就死了。**
+
+**两个错误尝试**：
+```js
+spawn(exe, args, { detached: false })   // ❌ 父进程退出 → 一起死
+spawn(exe, args, { detached: true })    // ❌ 子进程仍继承父 console，SSH 关了就被带走
+```
+
+**`detached: true` 为什么不够**：它只创建新的进程组，**不解除 console 继承**。
+SSH 会话关掉 → console 消失 → 子进程收到控制事件 → 退出。
+
+**唯一可靠的写法**：
+```powershell
+$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd }
+$r.ProcessId
+```
+WMI 的父进程是 `svchost`（WMI 服务），完全脱离我们的 shell。
+
+**实测对照**：
+| 方式 | 6 秒后 | 10 秒后 |
+|---|---|---|
+| `detached:false` | 端口消失 | — |
+| `detached:true` | 端口消失 | — |
+| **WMI** | — | **端口仍在，pid 一致 ✅** |
+
+**引号坑**：`CommandLine` 里的引号必须成对。直接拼字符串会坏（之前踩过 `""exe" ... ""` →
+`Win32_Process.Create` 返回 21 Invalid parameters）。解法：先写一个临时 `.ps1` 再跑，
+用 here-string `@' ... '@` 把整条命令行原样夹住。
+
+**验证方法**：`up` 之后**等 6–10 秒再查端口**。立刻查会得到假阳性。
+
+### 5.65 Windows 上 `chrome --version` 没有 stdout（版本探测三层）（2026-10-22）
+
+```
+chrome.exe --version           →  无输出（而且会真的开一个窗口）
+chrome.exe --product-version   →  同样无输出
+```
+
+**原因**：`chrome.exe` 是 GUI 子系统程序（`/SUBSYSTEM:WINDOWS`），不挂父控制台，**没有 stdout**。
+PowerShell 的 `& $exe --version 2>&1` 拿到空字符串，`$LASTEXITCODE` 也是空。
+
+**三层探测**：
+| 平台 | 方法 | 可靠性 |
+|---|---|---|
+| Windows | 读同目录 `<version>.manifest` 的文件名 | ★★★ 纯文件系统，最快 |
+| Windows 兜底 | `(Get-Item chrome.exe).VersionInfo.ProductVersion` | ★★ |
+| Unix | `chrome --version` | ★★★ |
+
+**`<version>.manifest` 是 Google 打进 Chrome for Testing 解压包的**，不是我们写的，
+所以拿它当版本证据是可信的（顺带 `ProductName` 还会报 "Google Chrome for Testing"，
+等于身份确认）。
+
+**副作用**：用 `--version` 探测会**真的弹出浏览器窗口**，必须顺手清掉这些残留进程。
+
+### 5.66 Chrome for Testing 下载：官方源国内不可达，且没有官方 SHA256（2026-10-22）
+
+**可达性实测**（本机 2026-10-22）：
+```
+storage.googleapis.com/chrome-for-testing-public   → ❌ SSL 失败（不可达）
+registry.npmmirror.com/-/binary/chrome-for-testing → ✅ 200，171,065,107 bytes
+googlechromelabs.github.io/.../known-good-versions → ❌ SSL 失败（web_fetch 也到不了）
+```
+→ 镜像必须 npmmirror 优先，官方源只作境外兜底。
+
+**校验的困境**：Google 的 `known-good-versions-with-downloads.json` **不带 per-file SHA256**，
+npmmirror 也不提供 `.sha256` 文件（试过 `chrome-win64.zip.sha256` / `sha1` / `sha256sums.txt` 都是 404）。
+
+**所以用功能性验证**（比单纯比哈希更实在）：
+```
+① 字节数 == 镜像目录 JSON 给出的 size
+② zip 能解压
+③ 同目录 <version>.manifest 文件名 == 锁定版本      ← 最硬
+④ PE VersionInfo.ProductVersion == 锁定版本          ← 兜底
+⑤ SHA256 记进 cacheDir/sha256-<ver>.txt（TOFU，供将来检测损坏/篡改）
+```
+
+**npmmirror 目录 JSON 很有用**，能拿到精确字节数（省一次 HEAD）：
+```json
+[{"name":"chrome-win64.zip","size":171065107,"url":"..."},
+ {"name":"chrome-headless-shell-win64.zip","size":108635994},
+ {"name":"chromedriver-win64.zip","size":9625404}]
+```
+
+**大小**：`chrome-win64.zip` 163.1MB（解压后 chrome.dll 就 241MB）。
+国内下载约 60 秒（2.7MB/s）。**一份二进制，N 个 profile 共用，不是 N × 163MB。**
+
+### 5.67 `curl` 在 Windows 上会挂 SSL 吊销检查，`node fetch` 不会（2026-10-22）
+
+**症状**：
+```
+curl: (35) schannel: next InitializeSecurityContext failed:
+  CRYPT_E_REVOCATION_OFFLINE (0x80092013) - 吊销服务器已脱机
+```
+
+**原因**：Windows 上 `curl.exe` 用 schannel，会做证书吊销检查；离线/被墙时直接失败。
+**`node fetch` 用 OpenSSL，不碰 schannel**，同一个 URL 直接 200（实测 Range 请求头部返回 `50 4b 03 04`，合法 zip）。
+
+**所以**：下载走 Node 原生 `fetch` + `Readable.fromWeb` 流式落盘，不依赖 curl。
+（如果非要用 curl，加 `--ssl-no-revoke`。）
+
+### 5.68 平台没配 `homeUrl` 时不要回落到 `about:blank`（2026-10-22）
+
+**症状**：起了 3 个实例，全部 `window.NetClass === null`，`document.title` 是空白，
+`location.href` 是 `chrome://new-tab-page/`。
+
+**原因**：平台配置里常常只有 `auth.loginUrl`、没有 `homeUrl`。
+代码回落到 `about:blank` → Chrome 把它变成 `chrome://new-tab-page/` →
+**那是受保护页，`addScriptToEvaluateOnNewDocument` 不会执行** → 注入"看起来失败"。
+
+**正确回落链**：
+```js
+const defaultUrl = pl.auth?.loginUrl || pl.homeUrl || 'https://example.com/';
+```
+**任何占位都不要用 `about:blank`** —— 它会被 Chrome 转成 `chrome://` 页面。
+
+**排查口诀**：注入不生效时，先看 `location.href` 是不是 `chrome://` / `edge://` / `about:`。
