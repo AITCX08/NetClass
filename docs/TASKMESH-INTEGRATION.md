@@ -24,6 +24,7 @@
 | `netclass.logs@1` | 1 | 读 `logs/serve.log` 或 `logs/ingest.jsonl` 尾部（`kind` / `lines`） |
 | `netclass.progress@1` | 1 | 直连本机 CDP（127.0.0.1:<port>）读取当前页面 URL/标题/视频进度/是否完成；`match` 可按 URL 子串选标签页 |
 | `netclass.restart@1` | 1 | 重启 `NetClassServer` 计划任务，或指定某个 `NetClassVis-*` 任务 |
+| `netclass.drive@1` | 1 | 通过 CDP 驱动页面：`play` / `pause` / `next` / `reload` / `click`（click 用 `Input.dispatchMouseEvent` 真鼠标事件，兼容 MUI/React） |
 
 调用示例（在装有 TaskMesh operator 的机器上）：
 
@@ -93,6 +94,7 @@ node apps/cli/dist/main.js task start netclass.restart@1  --input restart.json  
 |---|---|---|
 | 2026-10-22 | 新增本文档；README 增加入口链接 | 无代码改动，仅文档 |
 | 2026-10-22 | TaskMesh 侧新增 `workers/netclass-ops`（status/logs/progress/restart） | 不改 NetClass 代码；只读 + 重启计划任务 |
+| 2026-10-22 | 追加 `netclass.drive`（play/pause/next/reload/click） | 仍不改 NetClass 代码；真鼠标事件由 TaskMesh 侧实现 |
 
 ---
 
