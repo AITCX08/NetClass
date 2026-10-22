@@ -64,8 +64,11 @@ switch ($Action) {
       $local = $pair.Split('|')[0]
       $remote = $pair.Split('|')[1]
       if (-not (Test-Path -LiteralPath $local)) { Write-Warning ("missing local file: " + $local); continue }
-      $tmp = '/C:/Users/YOURNAME/AppData/Local/Temp/netclass-' + [IO.Path]::GetFileName($remote)
-      & $Scp @SshOpts $local "$LaptopUser@$LaptopHost`:$tmp" | Out-Null
+      # ★ 2026-10-22 修：原来写死 YOURNAME（去个人化占位符）→ scp 静默失败、Move 也失败，等于没部署
+      $tmp = "C:/Users/$LaptopUser/AppData/Local/Temp/netclass-" + [IO.Path]::GetFileName($remote)
+      # 加错误检查：scp 失败必须报出来，不能再静默
+      & $Scp @SshOpts $local "${LaptopUser}@${LaptopHost}:$tmp"
+      if ($LASTEXITCODE -ne 0) { Write-Warning ("scp failed for " + $local); continue }
       $tmpWin = $tmp -replace '^/C:', 'C:'
       Invoke-RemotePs "Move-Item -Force -LiteralPath '$tmpWin' -Destination '$remote'; 'moved'"
       Write-Host ("uploaded -> " + $remote)

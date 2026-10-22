@@ -6,6 +6,7 @@
 // @author       TaskMesh
 // @match        https://edu.shengshengketang.com/*
 // @match        https://study.bjqiyang.com/*
+// @match        https://basic.qh.smartedu.cn/*
 // @run-at       document-start
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue

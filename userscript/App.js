@@ -12,7 +12,7 @@
   // 热重载时先回收上一个实例
   try { window.NetClass && window.NetClass.dispose && window.NetClass.dispose(); } catch (_) { }
 
-  const VERSION = '0.5.8';
+  const VERSION = '0.5.9';
   const NS = '[NetClass]';
   // ★ 2026-10-20：品牌/引流配置（userscript/brand.js 由 build.mjs 内联到此处之前）。
   //   二维码是 base64 内联的（userscript 读不到本地文件）；留空则该位置不渲染，不会出破图。

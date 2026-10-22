@@ -4,6 +4,6 @@
   "version": "1.5.0",
   "description": "在 chrome.userScripts 里注册并运行 NetClass 网课自动处理脚本（不依赖用户脚本管理器）",
   "permissions": ["userScripts", "storage", "alarms", "tabs", "scripting"],
-  "host_permissions": ["http://127.0.0.1/*", "https://api.deepseek.com/*", "https://edu.shengshengketang.com/*", "https://study.bjqiyang.com/*", "https://tea.webtrn.cn/*", "https://*.chaoxing.com/*", "https://*.ccjyxy.cn/*", "https://*.zhihuishu.com/*"],
+  "host_permissions": ["http://127.0.0.1/*", "https://api.deepseek.com/*", "https://edu.shengshengketang.com/*", "https://study.bjqiyang.com/*", "https://tea.webtrn.cn/*", "https://*.chaoxing.com/*", "https://*.ccjyxy.cn/*", "https://*.zhihuishu.com/*", "https://basic.qh.smartedu.cn/*"],
   "background": { "service_worker": "background.js" }
 }
