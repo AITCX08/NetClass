@@ -32,3 +32,6 @@ config/local.json
 
 config/local.json.bak-*
 
+
+# 技能同步的本机状态，不进仓库
+skills/_tools/.sync-state.json
