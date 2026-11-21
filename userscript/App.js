@@ -26,16 +26,18 @@
   /**
    * 面板底部的品牌区块：微信码 + 赞赏码 + 仓库链接。
    * 两个码都空 → 整个区块不渲染（开源给别人用时不打扰）。
-   * 已收起 → 只留一行"支持作者 ▾"，点开才显示二维码（默认收起，避免占满面板）。
+   * 已收起 → 只留一行"问题反馈 ▾"，点开才显示二维码（默认收起，避免占满面板）。
    */
   function brandBlock() {
     const hasQr = !!(BRAND.wechatQr || BRAND.donateQr || BRAND.sponsorUrl);
     if (!hasQr && !BRAND.repo) return '';
     // ★ 2026-10-20：默认展开由 brandCollapsedByDefault 决定（引流位要直接可见）。
     //   用户的点击选择持久化在 localStorage，优先于默认值。
+    // ★ 2026-10-23：key 升到 .v2 —— 需求改成「默认收起」，但老浏览器里存的
+    //   netclass.brandOpen=1（之前点开过）会一直压住默认值，换 key 让它自然失效一次。
     let open = !BRAND.brandCollapsedByDefault;
     try {
-      const saved = localStorage.getItem('netclass.brandOpen');
+      const saved = localStorage.getItem('netclass.brandOpen.v2');
       if (saved === '1') open = true;
       else if (saved === '0') open = false;
     } catch (_) { }
@@ -57,7 +59,7 @@
       `<div id="netclass-brand-hd" data-nc-self="1" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;font-size:11px;opacity:.8">` +
       `<span>${BRAND.repo ? `<a href="${BRAND.repo}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">★ ${BRAND.name}</a>` : '★ ' + BRAND.name}` +
       `${BRAND.author ? ` · by ${BRAND.author}` : ''}</span>` +
-      `<span style="opacity:.7">${open ? '收起 ▴' : '支持作者 ▾'}</span></div>` +
+      `<span style="opacity:.7">${open ? '收起 ▴' : '问题反馈 ▾'}</span></div>` +
       body + '</div>';
   }
   const HOST = location.hostname;
@@ -66,8 +68,11 @@
       : /webtrn\.cn/i.test(HOST) ? 'webtrn'
         : /chaoxing\.com/i.test(HOST) ? 'chaoxing'
           : /ccjyxy\.cn/i.test(HOST) ? 'ccjyxy'
-            : /zhihuishu\.com/i.test(HOST) ? 'zhihuishu' : 'unknown';
-  const PLATFORM_LABEL = { shengsheng: '生生课堂', qiyang: '职业培训', webtrn: '教师培训', chaoxing: '学习通', ccjyxy: '长春教师培训', zhihuishu: '智慧树知到', unknown: '未知平台' }[PLATFORM];
+            : /zhihuishu\.com/i.test(HOST) ? 'zhihuishu'
+              // 华医网（2026-10-23 接入）：整域通配。订单要跑的是 jcpxkh.91huayi.com
+              // （基层卫生人员能力训练平台），登录在 hysslogin，主站是 www。
+              : /91huayi\.com/i.test(HOST) ? 'huayi' : 'unknown';
+  const PLATFORM_LABEL = { shengsheng: '生生课堂', qiyang: '职业培训', webtrn: '教师培训', chaoxing: '学习通', ccjyxy: '长春教师培训', zhihuishu: '智慧树知到', huayi: '华医网', unknown: '未知平台' }[PLATFORM];
   const log = (...a) => console.log(NS, ...a);
   const warn = (...a) => console.warn(NS, ...a);
   const now = () => Date.now();
@@ -517,6 +522,11 @@
     chaoxing:  [1, 1.25, 1.5],
     shengsheng:[1, 1.25, 1.5, 2],
     qiyang:    [1, 1.25, 1.5, 2],
+    // ★ 华医网只有 1x（2026-10-23 实测）：playbackRate=2 会触发站点检测，
+    //   播放器黑屏并显示「播放行为异常，视频已停止播放」；1x 则 48s 墙钟推进 48.0s（eff=1.00）。
+    //   所以这里**不给任何升档**，让 clampRate 把一切更高档夹回 1。
+    //   站点靠 #video_speed_state + 3 个 0x0 隐藏 iframe（#jj_Iframe/#pf_Iframe/.threeIframe）做心跳校验。
+    huayi:     [1],
   };
   /** 把"期望倍速"夹到平台允许的最高档（用户设 2x 但平台只有 1.5 时返回 1.5） */
   function clampRate(want) {
@@ -2528,6 +2538,19 @@
            ${BRAND.proEnabled ? btn('pro', '⚡ Pro') : ''}
          </div>
          ${brandBlock()}`;
+      // ★ 2026-10-23：品牌区块一直带 cursor:pointer 和「收起 ▴ / 支持作者 ▾」，
+      //   但从来没绑过 click —— 二维码区点不动（默认收起后就永远看不到了）。
+      //   补上：点标题切换展开/收起，状态写 localStorage 并重绘面板。
+      const brandHd = panelEl.querySelector('#netclass-brand-hd');
+      if (brandHd) {
+        brandHd.onclick = (ev) => {
+          if (ev && ev.target && ev.target.tagName === 'A') return;   // 放给仓库链接
+          let cur = null;
+          try { cur = localStorage.getItem('netclass.brandOpen.v2'); } catch (_) { }
+          try { localStorage.setItem('netclass.brandOpen.v2', cur === '1' ? '0' : '1'); } catch (_) { }
+          draw();
+        };
+      }
       panelEl.querySelectorAll('button').forEach(b => {
         b.onmouseenter = () => { b.style.background = '#3a3a46'; };
         b.onmouseleave = () => { b.style.background = '#2b2b34'; };

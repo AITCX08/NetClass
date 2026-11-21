@@ -24,7 +24,17 @@ const appRaw = readFileSync(join(REPO, 'userscript', 'App.js'), 'utf8');
 //   ⚠️ 不能从 "// 供 App.js" 那个注释开始剥 —— 它出现在 window.NETCLASS_BRAND = BRAND 之前，
 //      会把赋值语句一起删掉，导致 App.js 里读到 undefined（实测踩过）。
 const brandClean = brandSrc.replace(/\n\/\/ Node 侧[\s\S]*$/, '\n');
-const app = (brandClean ? brandClean + '\n' : '') + appRaw;
+// ★ 2026-10-23：brand.js 必须包一层 IIFE。
+//   inject() 是把整段代码当 <script> 塞进页面【全局作用域】的，而 brand.js 里有顶层
+//   `const BRAND = {...}`。只要同一页面被注入第二次（例如 CDP 预注入 + inject-guard
+//   补注入，或页面 reload 后壳再跑一遍），就会撞
+//     Uncaught SyntaxError: Identifier 'BRAND' has already been declared
+//   整段脚本直接不执行 → 面板消失。App.js 自己带 IIFE 所以没这个问题，
+//   只有 brand 段是裸的。包起来后 BRAND 变局部，全局只留 window.NETCLASS_BRAND。
+const brandWrapped = brandClean
+  ? '(function () {\n' + brandClean + '\n})();\n'
+  : '';
+const app = brandWrapped + appRaw;
 
 const version = (app.match(/const VERSION = '([\d.]+)'/) || [, '0.4.0'])[1];
 

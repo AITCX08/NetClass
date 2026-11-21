@@ -19,7 +19,7 @@
  * 完成判定：树里叶子的 `un===0`（`un>0` = 该点未完成）。工作期间树状态不会变（侧边栏不随 AJAX 刷新），
  * 所以定期整页 reload 拿权威状态 —— 这也是"已完成的不重复做"的依据。
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,7 +28,15 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..');
 const AGENT_V = 3;   // ★ 必须与 runs/cx/agent.js 的 window.__cxAgentV 一致
 const AGENT_SRC = readFileSync(join(REPO, 'runs', 'cx', 'agent.js'), 'utf8');
-const RATE_SRC = readFileSync(join(REPO, 'runs', 'cx', 'cx-rate.js'), 'utf8');
+const RATE_SRC = readFileSync(
+  // ★ 2026-11-22：模块从 runs/cx/ 挪到 scripts/ —— runs/ 被 .gitignore 整体忽略，
+  //   放在那里等于永远不进版本库（回滚时 git checkout 找不到它）。
+  //   旧路径仍保留兜底，防止旧部署/旧文档里的引用失效。
+  (() => {
+    const a = join(REPO, 'scripts', 'cx-rate.js');
+    const b = join(REPO, 'runs', 'cx', 'cx-rate.js');
+    return existsSync(a) ? a : b;
+  })(), 'utf8');
 
 const A = {};
 const argv = process.argv.slice(2);

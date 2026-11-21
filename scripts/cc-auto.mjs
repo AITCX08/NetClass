@@ -17,6 +17,7 @@
  */
 import { Tab, listCcTabs, acquireTab, closeExtraTabs, ensureViewport, pageState, ensureTraining, expand, enumerate, openCourse, backToTraining, playFirstSegment, killUserscript, claimCourse, releaseCourse, myClaims, claimsSnapshot, touchClaims, sleep, CATNAMES } from './cc-lib.mjs';
 import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+const RATE = await import('./plan.mjs').then(m => m.planFor('ccjyxy').rate).catch(() => 1);   // P3：倍速由 plan 给（profile.rate），plan 挂了回落 1
 
 const A = {};
 const argv = process.argv.slice(2);
@@ -156,9 +157,9 @@ async function waitSegment(tab, idx) {
     if (Math.abs(s.video.cur - last) > 0.4) { last = s.video.cur; lastMove = Date.now(); }
     // ★ 速率守护（2026-10-19 改：目标倍速 1.25x，见 cc-lib HUNTER_JS 里的记账实测结论）
     //   平台记账上限 = 1.25 × 资源累计墙钟 → 1.25x 才能"一趟播完即记满"；2x 只会造成 62.5% 账差。
-    if (s.video.rate && s.video.rate < 1.2) {
-      log(`  段${idx} ⚠ 倍速被打回 ${s.video.rate}x → 压回 1.25x`);
-      await tab.ev(`(function(){var v=document.querySelector('video');if(!v)return;try{var s=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'playbackRate').set;localStorage.setItem('ncCc:rate','1.25');s.call(v,1.25);v.muted=true;v.play&&v.play().catch(function(){})}catch(e){}})()`);
+    if (s.video.rate && s.video.rate < RATE - 0.05) {
+      log(`  段${idx} ⚠ 倍速被打回 ${s.video.rate}x → 压回 ${RATE}x`);
+      await tab.ev(`(function(){var v=document.querySelector('video');if(!v)return;try{var s=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'playbackRate').set;localStorage.setItem('ncCc:rate','${RATE}');s.call(v,${RATE});v.muted=true;v.play&&v.play().catch(function(){})}catch(e){}})()`);
       try { await installHunter(tab); } catch (_) { }
     }
     if (Date.now() - lastLog > 120000) {

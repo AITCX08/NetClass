@@ -148,13 +148,42 @@ L1 挑未做过的课 → L2 挑未完成的子课程 → L3 处理课时。
 | `panel-shot.mjs` | 截图 + 面板计算样式 |
 | `refresh-diag.mjs` / `win-titles.mjs` | 刷新诊断 / 窗口标题 |
 
+**通用工具（跨平台，2026-10-23 从 `runs/` 转正入库）**
+| 脚本 | 用途 |
+|---|---|
+| `test-rate-ladder.mjs --port <p> --rates 1,1.25,1.5,2 --secs 20` | **倍速阶梯硬探测**：逐档设 → 观察 → 算「墙钟 vs 推进量」的实际倍率，并检测反作弊文案。输出 `最高可用倍速`。任何平台适用 |
+| `captcha-read.mjs <port> <name>` | **验证码读图**：真鼠标点图刷新（断言 src 变）→ canvas 导**原始像素** + 6x 最近邻放大。输出进 `runs/shots/` |
+| `captcha-submit.mjs <port> <code> <name>` | 填码 + 提交 + 抓请求体/响应 + 提交前后截图 |
+| `clean-tabs.mjs` | 清标签到只剩 1 个（防 `--login` 标签爆炸；交接人工也用） |
+| `inject-guard.mjs --port <p> --every 3` | 新 target 补注入（**带 mtime 热重载**，见 §5.75/§5.77） |
+
+**华医网专属（2026-10-23）**
+| 脚本 | 用途 |
+|---|---|
+| `huayi-login.mjs --port <p> --user <u> --pass <p>` | 自动登录（真鼠标 + `insertText` 填账号密码，setter 填码） |
+| `huayi-open-player.mjs <port> <cw_id> <pfx>` | 点「进入」→ `json/new` 开 CoursePlay（唯一能过的顺序，见 §5.74） |
+| `huayi-check.mjs` | 双端口状态巡检并压回 1x |
+| `huayi-dual-test.mjs` | 双账号并行采样（`eff` / `dlg` / `err` / `panel`） |
+| `huayi-watch.mjs --ports 9231,9250 --every 30` | 1x 保活 + 反作弊重载 + 播完自动轮转 |
+| `huayi-natural-finish.mjs <port> [tail]` | **自然播完触发记账**（seek 到 duration-90 再播，等 `#learn_state` 变 `"1"` 并抓 `AddCoursePlay`）。见 §5.84 |
+| `huayi-read-home.mjs` | 点「首页」并读三项进度（直播课程/课程学习/调查问卷） |
+| `survey-star-dump.mjs <port>` | dump 问卷星结构（题目/选项/条件题/提交按钮） |
+| `survey-star-fill.mjs <port> [--dry]` | 自动填写（radio 用 click，checkbox 用真鼠标点 `a.jqcheck`） |
+| `survey-star-fix-checkbox.mjs <port>` | 专修勾不上的多选题（`elementFromPoint` 校验 + 清红框）。见 §5.85 |
+| `survey-star-submit.mjs <port>` | 清红框 → 真鼠标点提交 → 验证 `wjxjoinid` |
+
+
 **笔记本侧（`runs/remote/*.ps1`，纯 ASCII）**
 | 脚本 | 用途 |
 |---|---|
 | `start-visible.ps1` | 一键重启两个可见窗口（杀进程 → 清 Singleton → 计划任务 `/IT` 启动 → 等端口） |
 | `start-webtrn.ps1` | 起第三个浏览器（教师培训平台，端口 9226） |
+| `start-huayi-visible.ps1` | 起华医网实例 1（端口 9231）；**按端口杀，不杀全部 Chrome**；自带置前 + 截图 |
+| `start-huayi-second.ps1` | 起华医网实例 2（**不杀任何进程**）；从启动日志解析动态端口（本次 9250）；窗口摆右半屏 |
+| `shot-task.xml` / `arr-task.xml` | 计划任务 XML 模板（`<LogonType>InteractiveToken</LogonType>`，见 §5.69） |
 | `status-check.ps1` | 进程数、端口、计划任务状态 |
 | `find-webtrn-profile.ps1` / `list-chrome-instances.ps1` | 环境盘点 |
+
 
 ### 2.3 runs/
 
@@ -559,6 +588,97 @@ paperwriter 是通用生成器，它不知道这门课 —— 接地信息必须
    实测可区分：不合格稿 1 命中（只命中培训名）／落地稿 4 命中。
 **教训**：**先看课，再写字**；提交不可撤销，闸门必须跑在提交之前。
 
+### 5.86 换网络后 SSH 全断：`Connection timed out` 就是防火墙，别去查服务
+
+**症状**：ping 通、笔记本 `netstat` 显示 `0.0.0.0:22` 在听，但 `ssh` 报 `Connection timed out`。
+
+**判据**：`refused` = 服务没开；**`timed out` = 包被防火墙丢了（DROP）**。
+
+**根因**：OpenSSH Server 自带规则 `OpenSSH-Server-In-TCP` 只对 `Domain,Private` 生效；
+无线网被判成 `Public` 时规则不匹配 → 静默丢包。修复（笔记本管理员 PowerShell）：
+
+```powershell
+Get-NetConnectionProfile | ForEach-Object {
+  if ($_.NetworkCategory -eq 'Public') { Set-NetConnectionProfile -InterfaceIndex $_.InterfaceIndex -NetworkCategory Private }
+}
+Get-NetFirewallRule -DisplayName "OpenSSH-Server*" -EA SilentlyContinue | Enable-NetFirewallRule
+```
+
+**连上后还要做的两件事**：① `config/local.json` 的 `ssh.target` 换新 IP
+（**保留 `HostKeyAlias=192.168.1.10`**，这样 `known_hosts` 里 pin 的主机密钥继续复用，不用重新 accept）；
+② 重建隧道 `pwsh -File scripts/tunnel.ps1 -Port <端口>`（`17800` 只绑 `127.0.0.1`，永远走 `-L`）。
+
+**顺带踩到的**：`ssh host 'a; b; c'` 在默认 `cmd` shell 下，`;` 被 `echo` 当字面量吞掉，
+输出只有命令原文。别用分号串命令，用独立调用或 `powershell -File`。
+
+### 5.87 远程执行器的三个坑：参数被 cmd 吃掉、`$Profile` 撞自动变量、中文乱码
+
+`scripts/ssh-exec.ps1` 把这三条都修了，写新脚本时照抄它的做法：
+
+| 坑 | 现象 | 修法 |
+|---|---|---|
+| 参数走命令行 | `-Arg '$Port = 9260'` 变成 `'$Port','9260'` 一整串 → 绑定报 `cannot convert System.Object[] to Int32` | **参数不上线**：`-Arg` 收完整语句，注入到目标脚本 `param()` **之后** |
+| 剥掉 `param()` | `[string]$Profile` 没声明了 → 拿到 `$PROFILE`（profile 脚本路径），被当成 Chrome `--user-data-dir` | 不剥 `param()`，把 `-Arg` 插在它后面覆盖默认值（`param()` 必须是第一条语句） |
+| `-EncodedCommand` 太长 | 6 KB 脚本编码成 17 KB，超 cmd 8191 上限 → `命令行太长` | 改 **scp + `powershell -File`**，无长度限制 |
+| 中文乱码 | PS 5.1 把 `.ps1` 按 ANSI 读 | 落盘用 **UTF-8 带 BOM**；远端同时 `[Console]::OutputEncoding = UTF8` |
+
+**找 `param()` 结尾别用正则**：`.*?\)` 只在参数表里没有括号时才对；一个注释或默认值里带括号
+就会插错位置。用**括号配对扫描**（含字符串字面量跟踪）。
+
+### 5.88 Session 0 看不到也截不到用户桌面 —— 包括"窗口可见性"的验证
+
+SSH 起的进程在 **Session 0**。从那里：`EnumWindows` 只枚举自己会话 → 用户窗口全看不见；
+`Graphics.CopyFromScreen` 截出**空白图**；`Process.MainWindowHandle` 返回 `0x0`。
+
+所以 `capture-screen.ps1` 会**自查会话，再经 Interactive 计划任务把自己重新拉起来**（Session 1）
+才截图。同理，**从 Session 0 观测到的「没有可见窗口」不可信** —— 判断浏览器有没有起来要看
+`Get-Process chrome | Select SessionId`（等于登录会话 id 就对）+ CDP `/json/version` 通。
+
+> 另一条老坑（同源）：`SetWindowPos(HWND_TOPMOST)` 会让窗口**永远压在最上面**，只能最小化/关闭。
+> 正确做法是先 TOPMOST 再立刻 NOTOPMOST（`launch-visible-chrome.ps1` 里已改，并会断言结果非 topmost）。
+
+### 5.89 中文 `.ps1` 在 Windows PowerShell 5.1 下解析失败
+
+用 `powershell -File scripts\tunnel.ps1` 报一堆 `Missing closing '}'` / `Unexpected token`，
+而 `pwsh` 下完全正常 —— 因为 **PS 5.1 把无 BOM 的 `.ps1` 按 ANSI 读**，中文全变乱码，
+连字符串引号都被吃掉。
+
+**一次性修法**：给仓库里所有含非 ASCII 的 `.ps1` 补 UTF-8 BOM（已批量做过 9 个文件）。
+补完 5.1 和 7 都能解析。**新写的中文 `.ps1` 一律带 BOM。**
+
+### 5.90 `$R` 被 `$r` 覆盖（PowerShell 变量名不区分大小写）
+
+```powershell
+$R = 'E:\Desktop\NetClass'
+$r = Invoke-WebRequest ...
+Join-Path $R 'config'      # → 找不到驱动器 "{"ok""  ← $R 已经是 WebResponse 了
+```
+
+PowerShell 变量名**大小写不敏感**，`$R`/`$r`、`$Path`/`$path` 是同一个变量。
+多用带前缀的名字（`$RootDir` / `$CfgPath`），少用单字母。
+
+### 5.91 工作区迁到 `E:\Desktop\NetClass`（2026-11-21）
+
+原来部署产物埋在 `%LOCALAPPDATA%\TaskMesh\netclass`，和历史探针垃圾（`probe1~9.bat`、
+`launch-.bat`、各种测试 profile）混在一起。现在统一到笔记本 E 盘（注册表确认
+`E:\Desktop` 就是真实桌面，E 盘 336 GB 空闲）：
+
+```
+E:\Desktop\NetClass\
+  app\        17800 服务的载荷（server.ps1 / App.js / netclass.user.js / dist\）
+  instances\  各调试端口的 Chrome 用户目录
+  orders\     每单一个目录 <yyyy-MM-dd>-<单位简称>\（README + artifacts + evidence）
+  runs\       logs\ shots\
+  scripts\  config\
+```
+
+**切换是安全切的**：`switch-server-root.ps1` 先在 `17801` 用新根起探针实例，
+比对 `userJsBytes/appJsBytes` 与老服务完全一致、`/App.js` 内容正确，才停老的、改计划任务、
+再验 `17800`。旧目录**原封不动留着**，`-Rollback` 一条命令回退。
+
+**迁移时用 `robocopy /XJ /R:1 /W:1`**：`/XJ` 跳过 junction（Chrome 用户目录里有，会无限递归），
+`/R:1 /W:1` 避免锁住的 profile 文件把迁移卡死。
+
 ---
 
 ## 6. 站点事实速查
@@ -613,6 +733,75 @@ POST /api/exam/popQuiz/insertUserAnswer                           作答（回�
 - 研修活动页 `/project/template/guopei/newTeam/activity_view.jsp?activityId=…&teamId=…`
   四个标签页（`setTab('tabs',N,4,'<id>')`），前两个是评论类，后两个是上传类
 - 作业列表 `/project/template/guopei/homework/student_homework_list.jsp`（正文 AJAX 加载）
+
+### 6.4 华医网（`jcpxkh.91huayi.com`，2026-10-23）
+
+> 完整事实见技能库 `netclass-course-orders/references/platforms.md` 的「华医网」小节。这里只放速查。
+
+**五条一句话事实**
+
+1. **严格 1x** —— `playbackRate > 1`（连 1.25x）会让 `video` 元素直接消失、播放器换成「播放行为异常」；
+   `ratechange` 被抓 → `#jj_Iframe` / `#pf_Iframe` / `.threeIframe` 三个 0x0 隐藏 iframe 上报 → 播放器自杀。
+2. **单账号单路** —— 同账号第二个播放页报「您有其他课程正在播放」，`video` 被销毁。多路必须多账号 + 多 profile + 多端口。
+3. **整页导航丢鉴权** —— 唯一能过的顺序是：`ProjectList` → 点「进入」→ `ExerciseHome/index` → `PUT /json/new?<CoursePlay>`。
+4. **登录是双层 SSO** —— 主站登完还要 `/exercise/ExerciseLogin/VerifySSOCode`；**重启浏览器等于重新登一次**。
+5. **站点先校验账号密码，失败也报「验证码错误！」** —— 别把这句话当成验证码有问题。
+
+**关键选择器**
+
+| 用途 | 选择器 |
+|---|---|
+| 密码登录：账号 / 密码 / 验证码 | `#user_name` / `#password` / `#userCode` |
+| 密码登录：验证码图 | `#user_yzm`（点它触发 `LoadCode()` → `/code/ImageSecond`） |
+| 短信登录：验证码框 / 图 | `#mobileCode` / `#moblie_yzm`（`LoadMobileCode()` → `/code/IdentifyingCode`） |
+| 登录按钮 | `button.login` |
+| 进入项目 | 项目卡上的 `input[value=进入]`（约 (1398,316)） |
+| 浮层「我知道了」 | `button.s_but`（约 (960,600)） |
+| 左侧导航 | `div.navItem`（「直播间」约 (480,218)） |
+| 直播回放列表项 | `div.contentItem`（`onclick` 里带 `courseware_id`） |
+| 播放器 | `video`（注意 `naturalWidth` 类属性不可用，看 `currentTime/duration`） |
+| 反作弊文案 | `/播放行为异常|已停止播放/` |
+
+**接口**
+
+```
+GET  /code/ImageSecond?t=<rand>                                   密码登录验证码图
+GET  /code/IdentifyingCode?t=<rand>                               短信登录验证码图
+POST /exercise/ExerciseLogin/UserNameLogin                        user_name&password&userCode&source=0&classify_id=
+GET  /exercise/ExerciseCourse/CoursePlay?courseware_id=<uuid>     播放页
+```
+
+**回放清单**
+
+| 场次 | courseware_id | 时长 |
+|---|---|---|
+| 10月10日 | `b65f246f-25df-44a7-84a1-bf791c520469` | 20664s = 5:44:24 |
+| 10月11日 | `825ac6fd-1c77-449b-9abd-081c0d1e2e67` | 21202s = 5:53:22 |
+
+**结业要求**（首页原文）：① 直播课学习（可回放）② 录播课学习（选学 50 学时）③ 项目调研问卷（截止 11-30）。
+
+**专属脚本**：`scripts/huayi-login.mjs` / `huayi-open-player.mjs` / `huayi-check.mjs` / `huayi-dual-test.mjs` / `huayi-watch.mjs`。
+
+### 6.5 国家中小学智慧教育平台（`basic.smartedu.cn`，2026-11-22 接入）
+
+> ⚠️ 与青海租户 `basic.qh.smartedu.cn`（`platforms.json` 里的 `smartedu`）是**两套实现**，
+> 约束不能互相套用：国家级按播放位置记账（跳尾有效），青海按累计秒数（跳尾无效）。
+
+| 项 | 值 |
+|---|---|
+| 登录 | `https://auth.smartedu.cn/uias/login`（智教中国通行证）：`#username` / `#tmpPassword` / `#agreementCheckbox`；需实名认证 |
+| 会话 | UC SSO 三件套：cookie `UC_TOKEN-<appid>-ncet-xedu`（JWT 7 天）+ `UC_SSO_TGC-<appid>-product` + localStorage `ND_UC_AUTH-…&token` 的 access_token；身份读 `X-EDU-WEB-USER` |
+| 学分 | `POST https://x-study-record-api.ykt.eduyun.cn/v1/study_details`，`progress` 0-100 按**资源时长加权**，`status` 0/1/2 |
+| 续播 | `PUT …/v1/resource_learning_positions/<resUuid>/<userId>` `{"position":秒}`（与学分无关） |
+| ★ 打法 | `currentTime = duration - 12` → 自然播完最后 12 秒 → `status=2`。3 资源课实测 `40/1 → 67/1 → 100/2`，整门约 50 秒 |
+| 完成判据 | `courseIndex` 右侧圆形徽章 `100% 已学习`（DOM：`div[class*=course-progress] > div[class*=progress-info]`）。**40% 就会显示「已学习」字样，必须看百分比** |
+| 入口三态 | `开始学习` / `继续学习` / `复习回顾`（第三态=已 100%，直接判完成，别找视频） |
+| 竞态 | `courseIndex` 先渲染骨架后出按钮，入口必须**轮询**（16×1.2s） |
+| 卡片 | 分类页课程卡片 `<a>` 无 `href`，只能真鼠标点再读 `location.href` |
+| CORS | `x-study-record-api` 的 GET 被挡（页面内 fetch 报 `TypeError`），页面自己的 POST 正常 → **只读界面** |
+| 并行 | ❌ 必须串行（按播放器当前持有的课记账） |
+
+**专属脚本**：`scripts/smartedu-session.mjs` / `smartedu-course.mjs` / `smartedu-batch.mjs` / `smartedu-cards.mjs` / `smartedu-list.mjs` / `smartedu-parse-courses.mjs` / `smartedu-probe-player.mjs` / `smartedu-seek-test.mjs`。
 
 ---
 
@@ -1253,3 +1442,554 @@ const defaultUrl = pl.auth?.loginUrl || pl.homeUrl || 'https://example.com/';
 **任何占位都不要用 `about:blank`** —— 它会被 Chrome 转成 `chrome://` 页面。
 
 **排查口诀**：注入不生效时，先看 `location.href` 是不是 `chrome://` / `edge://` / `about:`。
+
+---
+
+### 5.69 SSH 拉起的浏览器窗口用户看不见（Session 0 vs Session 1，2026-10-23）
+
+**症状**：命令返回成功、`chrome pid=xxx`、日志写 `front: xxx`，但用户屏幕上**什么都没有**。
+
+**原因**：SSH 登录落在 **Session 0**（服务会话），`spawn(detached)` / WMI 拉起的 Chrome 继承 Session 0，
+窗口建在**非交互式窗口站**里 —— 进程活着、窗口句柄存在，但不在用户的桌面上。
+`EnumWindows` 从 Session-1 的进程去枚举 SSH 拉起的 pid → 返回 `ALL_WINDOWS=0`。
+
+**判别**：
+```powershell
+(Get-Process -Id $PID).SessionId        # 你的 shell 在第几个会话
+Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" |
+  Where-Object { $_.CommandLine -match 'remote-debugging-port' -and $_.CommandLine -notmatch '--type=' } |
+  ForEach-Object { $_.ProcessId }
+```
+
+**做法**：用**计划任务 + `/IT`（InteractiveToken）**，让 Chrome 在登录用户的交互会话里起：
+```xml
+<LogonType>InteractiveToken</LogonType>
+```
+```powershell
+schtasks /Create /TN NetClassVis-huayi /XML task.xml /F
+schtasks /Run /TN NetClassVis-huayi
+```
+实测日志：`[17:13:31] windows found=5 / 1280x900 :: 华医网 - Google Chrome for Testing` —— 有窗口才算真出来。
+
+**注意**：SSH 会话里 `EnumWindows` **永远看不到** Session-1 的窗口，别据此判断「窗口没出来」。
+判断标准只能是：计划任务自己写的「windows found / front set」日志。
+
+---
+
+### 5.70 `netclass up --login` 每次导航开新标签 → 标签爆炸（2026-10-23）
+
+**症状**：一个端口攒到 **33 个标签**（另一端口 29 个）；随后批量关标签把浏览器搞僵 ——
+**端口还 `LISTEN`，但 CDP `/json/version` 连不上**（`无法连接到远程服务器`）。
+
+**原因**：`--login` 路径每次导航都 `Target.createTarget`，不回收旧标签。
+
+**做法**：
+```powershell
+node scripts\clean-tabs.mjs          # 清到只剩 1 个
+```
+**关标签数量大之后必须复查 CDP 连通性**；已僵死就杀进程重启实例，不要试图复用：
+```powershell
+Get-Process chrome | Stop-Process -Force
+Remove-Item "$env:LOCALAPPDATA\NetClass\instances\huayi--*.json" -Force
+```
+（记录不删的话 `ps` 一直显示 `dead`。）
+
+---
+
+### 5.71 ★★ 图形验证码三个致命坑（华医网 13 次失败换来的，2026-10-23）
+
+**症状**：填的码和图上完全一致，服务端一律返回 `{"state":2,"msg":"验证码错误！"}`。
+
+| 坑 | 现象 | 根因 | 解法 |
+|---|---|---|---|
+| **用已消费的旧图** | 码对着图，还是错 | 图是上一轮提交用掉的，`LoadCode()` 没真刷 | 真鼠标点图 + **断言 `src` 前后不同** |
+| **每个字符敲两遍** | 读图 `Z8UV`，填进去 `ZZ88UUVV` | `Input.dispatchKeyEvent` 的 `keyDown` **同时带 `text` 和 `char`** | `keyDown` 不带 `text`；或直接用 `Input.insertText` |
+| **密码框被清空** | 脚本回读 `value.length=9`，截图上是空白 | 勾协议 + 等码的几十秒里站点自己清空 | 提交前回读，空了立刻真鼠标 + `insertText` 补填 |
+
+**标准顺序**（`scripts/huayi-login.mjs` 已固化）：
+清遮罩 → 切密码登录 → 等图容器可见 → 真鼠标点账号框 + `insertText` → 真鼠标点密码框 + `insertText`
+→ 勾协议 → 真鼠标点图刷新（断言 src 变）→ canvas 导图 → 人读 → setter 填码 → 回读三字段 → 点登录。
+
+---
+
+### 5.72 图在 `display:none` 容器里时，换 `src` 浏览器可能不发请求（2026-10-23）
+
+**症状**：在未切 tab 的状态下反复 `LoadCode()`，六次采样图片 hash **全同**（`5f93323bc5`），
+看起来像「图不会变」，实际是请求根本没发出去。
+
+**原因**：`#user_yzm` 的祖先链
+```
+IMG#user_yzm → SPAN → DIV.mess → DIV.login_box_item → DIV.card_box(display:none) → DIV.box_right
+```
+`card_box` 是 `display:none`。
+
+**做法**：**先切到对应登录方式让容器可见**（轮询 `offsetParent && getBoundingClientRect().width > 0`），
+再做刷新与取图。**hash 不变不能作为「图没换」的证据**，要看 Network 里有没有 `/code/` 请求。
+
+---
+
+### 5.73 站点先校验账号密码，失败也报「验证码错误」（2026-10-23）
+
+**症状**：同一个脚本，账号 A 连试 13 次全败，账号 B 两次都一次过。
+
+**原因**：`jcpxkh` 的 `UserNameLogin` **先校验账号密码**，任一失败统一回
+`{"state":2,"msg":"验证码错误！"}` 以防账号探测。
+
+**判别法**：**拿另一个已知能登的账号跑同一个脚本** ——
+一次过 ⇒ 脚本是对的，问题在被怀疑的那个账号（密码/锁定），不在验证码。
+
+**教训**：不要把「报验证码错」直接当成「验证码有问题」，先做 A/B 对照再改代码。
+
+---
+
+### 5.74 `jcpxkh` 整页导航会丢鉴权（双层 SSO，2026-10-23）
+
+**症状**：登录成功跳到 `/exercise/ExerciseHome/ProjectList`，之后任何整页导航都被踢回 `VerifySSOCode`。
+
+**四种顺序实测**：
+
+| 操作 | 结果 |
+|---|---|
+| `Page.navigate` → `/Exercise/ExerciseCourse/LiveStreaming` | ❌ 踢回 |
+| 同标签 `Page.navigate` → `CoursePlay?courseware_id=…` | ❌ 踢回 |
+| `PUT /json/new?<CoursePlay>`（当前停在 `ProjectList`） | ❌ 踢回 |
+| **`ProjectList` 点「进入」→ `ExerciseHome/index` → `PUT /json/new?<CoursePlay>`** | ✅ **成功** |
+
+**做法**：固定走第四条。`scripts/huayi-open-player.mjs` 已固化。
+
+**附带**：点「进入」后弹「我已知悉以上内容」浮层（复选框 + 「我知道了」，约 (960,600)），
+**不关掉后续点击全被遮**；关完还要**重新点一次「直播间」** —— 内容区是 AJAX 渲染，
+浮层挡着时列表根本不加载（`contentItem` 数量 0）。
+
+---
+
+### 5.75 CDP 注入是 per-target，新标签拿不到脚本（2026-10-23）
+
+**症状**：主标签有 `window.NetClass` 面板，`window.open` / `LiveOpenVideoPlay()` 开的新标签**没有面板**。
+
+**原因**：`Page.addScriptToEvaluateOnNewDocument` 只对**注册时已存在的 target** 生效；
+新 target 不会被自动注入。MV3 的 `chrome.userScripts.register()` 能覆盖，但它要求手动开「允许用户脚本」开关，CLI 改不了。
+
+**做法**：长驻轮询补齐
+```powershell
+node scripts\inject-guard.mjs --port 9231 --every 3
+```
+逻辑：每 N 秒拉 `/json/list`，对 `typeof window.NetClass === 'undefined'` 的页面重新注入。
+
+---
+
+### 5.76 `brand.js` 裸 `const` 二次注入会炸掉整段脚本（2026-10-23）
+
+**症状**：面板时有时无；控制台 `Uncaught SyntaxError: Identifier 'BRAND' has already been declared`，随后整段脚本死掉。
+
+**原因**：`build.mjs` 把 `brand.js` 直接拼在 `App.js` 前面，而 `brand.js` 用的是顶层 `const BRAND = {...}`。
+`inject()` 把代码放进**全局作用域**，第二次注入就重复声明。
+
+**做法**：构建时给非主脚本各自包一层 IIFE
+```js
+// scripts/build.mjs
+const brandWrapped = '(function () {\n' + brandClean + '\n})();\n';
+```
+**凡是被拼接进来的独立片段，都要单独包 IIFE。**
+
+---
+
+### 5.77 `inject-guard` 缓存了旧 dist → 改了代码不生效（2026-10-23）
+
+**症状**：改了 `userscript/`、`node scripts/build.mjs` 也跑了，注入日志一切正常，**页面还是老版本**。
+
+**原因**：`inject-guard` 启动时把 `dist/netclass.user.js` 读进内存，之后一直用缓存。
+
+**做法**：每轮比对 `mtimeMs + size`，变了就重读：
+```js
+function currentSource() {
+  const st = statSync(DIST);
+  const sig = st.mtimeMs + ':' + st.size;
+  if (sig !== lastSig) { cached = readFileSync(DIST, 'utf8'); lastSig = sig; }
+  return cached;
+}
+```
+
+**另一个同源坑**：`Page.addScriptToEvaluateOnNewDocument` 注册的是**启动那一刻的 dist 内容**，
+刷新页面会重跑**旧注册**，把 `window.NETCLASS_BRAND` 又写回老值 ——
+**只有重启浏览器才会替换这个注册**。改品牌类常量后必须重启实例。
+
+---
+
+### 5.78 华医网严格 1x：`playbackRate > 1` 直接杀播放器（2026-10-23）
+
+**症状**：设 `video.playbackRate = 1.25`（或更高）后，`video` 元素**直接消失**（探针返回 `r=undefined`），
+播放器换成「播放行为异常，视频已停止播放」。
+
+**阶梯实测**（`node scripts/test-rate-ladder.mjs --port 9250 --rates 1,1.25,1.5,1.75,2 --secs 20`）：
+
+| 设置 | 实际推进 | 结论 |
+|---|---|---|
+| 1.00x | 20.1s / 20.2s = **1.00** | ✅ |
+| 1.25 / 1.5 / 1.75 / 2.0 | **0.0s** | ❌ 全被拦 |
+
+**机制**：`ratechange` 被抓 → 三个 0x0 隐藏 iframe（`#jj_Iframe` / `#pf_Iframe` / `.threeIframe`）上报 → 播放器自杀。
+**不是降速，是杀死播放器。**
+
+**做法**：`platforms.json` 里 `rateMax = 1`；`App.js` 的 `PLATFORM_RATES.huayi = [1]`；
+`clampRate` 把所有更高的值折回 1。**重载能完全恢复且进度不丢**，所以测倍速没有代价。
+
+---
+
+### 5.79 第二个实例会去抢第一个实例的端口（2026-10-23）
+
+**症状**：起实例 2 时报 `WMI 启动失败: 251100`，实例没起来。
+
+**原因**：`netclass up` 读 `platforms.json` 的 `huayi.cdp: 9231`。若 9231 当时**没有 LISTEN**，
+实例 2 也去绑 9231，撞上后失败。
+
+**做法**：起第二个实例前**先确认第一个端口真的在听**：
+```powershell
+$c = Get-NetTCPConnection -State Listen -LocalPort 9231 -EA SilentlyContinue
+if (-not $c) { '警告：9231 没在听，实例2 会抢 9231' }
+```
+实例 2 走 `NetClassVis-huayi2`（脚本内部从启动日志解析动态端口，本次拿到 9250）。
+
+---
+
+### 5.80 读验证码：canvas 导原始像素，不要用 CDP `clip`（2026-10-23）
+
+**症状**：`Page.captureScreenshot({ clip, scale: 8 })` 截出来的验证码**字符糊成一团**，认不出。
+
+**原因**：元素 `naturalWidth × naturalHeight` 是 **100×100**，但 CSS 显示尺寸是 **120×48** ——
+CDP 按**显示尺寸**截，再放大 8 倍，等于把字符横向拉扁了。
+
+**做法**：canvas 按 `naturalWidth/naturalHeight` 导原始像素，再整数倍最近邻放大：
+```js
+const c = document.createElement('canvas');
+c.width = img.naturalWidth; c.height = img.naturalHeight;
+const x = c.getContext('2d');
+x.imageSmoothingEnabled = false;              // ★ 关插值
+x.drawImage(img, 0, 0, c.width * 6, c.height * 6);
+```
+`scripts/captcha-read.mjs` 已固化（含真鼠标点图刷新 + 双导出）。
+
+---
+
+### 5.81 真鼠标点图 vs 直接调页面函数（2026-10-23）
+
+**症状**：`LoadCode()` 调用返回正常，但图片 `src` 没变、Network 没请求。
+
+**原因**：站点的 `onclick="LoadCode();"` 之外可能还有别的绑定（mousedown / 事件委托）；
+纯函数调用绕过了它们。且瞬时 `src` 改动在隐藏容器里可能被浏览器合并/丢弃。
+
+**做法**：**一律用 CDP 真鼠标点**，并断言效果：
+```js
+const before = await ev("document.getElementById('user_yzm').src");
+await clickAt(box.x, box.y);                       // mousePressed + mouseReleased
+await sleep(2600);
+const after  = await ev("document.getElementById('user_yzm').src");
+if (before === after) { /* 没刷新 → 重试或报错，别继续提交 */ }
+```
+
+**通用纪律**：凡「点了应该有副作用」的操作，都要**断言副作用真的发生了**，
+不能只看调用没抛异常。
+
+---
+
+### 5.82 ★ 用真实截屏判断，不要只信 DOM 查询（2026-10-23，本轮最大教训）
+
+**症状**：代码说「元素不存在」，截图里它明明在那儿。整轮排查因此走偏了很久。
+
+**三处实证**：
+
+| 症状 | 代码看到的 | 截图看到的 |
+|---|---|---|
+| 找不到「直播回放」tab | `document.body.innerText` 正则不匹配；`querySelectorAll('div.contentItem').length === 0` | **tab 就在 (773,210)**，只是浮层挡着 / AJAX 未渲染 |
+| 验证码图「没变」 | 6 次采样 hash 全同 | 图在 `display:none` 容器里，根本没发请求 |
+| 密码「填进去了」 | `el.value.length === 9` | 界面上是**空的**（站点自己清空了） |
+
+**原因**：
+- `innerText` 对 `display:none` 元素返回空，`getBoundingClientRect()` 却有值 —— 两种探测各有一半真相；
+- 文本正则受换行/空白/字符编码影响（同一个「直播回放」，`innerText` 里可能夹了零宽字符）；
+- DOM 是**模型**，截图是**渲染结果**，两者不一致时以渲染为准。
+
+**做法（操作纪律）**：
+
+1. **每个关键步骤后 `Page.captureScreenshot`**，看一眼页面真实状态再决定下一步；
+2. **判断「元素在不在」以截图为准**；需要用 DOM 时，同时打印 `offsetParent` / `getBoundingClientRect` / `innerText` 三个值对照；
+3. **元素能给真实坐标就用真鼠标点**；拿不到坐标就**从截图读坐标**再点；
+4. **长流程（登录 / 开播放器）每步截图留证**，出错能立刻定位断在哪一步；
+5. **凡「点了应该有副作用」的操作，断言副作用真的发生**（src 变了 / url 变了 / 列表长度变了），
+   不能只看调用没抛异常。
+
+
+---
+
+### 5.83 ★ `SetWindowPos(HWND_TOPMOST)` 会让窗口永久压在最上面（2026-10-23）
+
+**症状**：订单方反馈「你启动的浏览器点空白处也不会被遮挡，好像被强制置顶了，只能最小化或关闭」。
+
+**原因**：置前脚本里写了
+```powershell
+[void][FB]::SetWindowPos($m.h, [IntPtr](-1), 0, 0, 0, 0, 3)   # -1 = HWND_TOPMOST
+```
+`HWND_TOPMOST` 是**持久状态**（扩展样式 `WS_EX_TOPMOST`，0x00000008），一旦设上，
+窗口就永远排在所有非置顶窗口之上 —— 点桌面、点别的窗口都切不下去，只能最小化/关闭。
+当时还写了条错注释「20 秒后不自动取消，靠用户切走」—— **TOPMOST 状态下根本切不走**。
+
+**诊断方法**（不要靠猜，直接问 Windows 要样式位）：
+
+```powershell
+Add-Type @"
+using System; using System.Text; using System.Runtime.InteropServices;
+public class DT {
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc f, IntPtr l);
+  public delegate bool EnumWindowsProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int idx);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  public const int GWL_EXSTYLE = -20;
+  public const int WS_EX_TOPMOST = 0x00000008;
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+}
+"@
+# 对每个窗口： (GetWindowLong(h,-20) -band 0x8) -ne 0  就等于「被置顶了」
+```
+> ⚠ **SSH 在 Session 0 查不到 Session 1 的窗口**（见 §5.69），必须用 `/IT` 计划任务跑诊断。
+> 捷径：`runs/remote/diag-topmost.ps1` 已写好（枚举扩展样式 + 前台采样 + Z 序前 12 名 + 落文件）。
+> 快捷解法：`runs/remote/untopmost.ps1` 把指定端口的窗口全部 `HWND_NOTOPMOST`（不重启、不掉登录）。
+
+**正确做法：借用一瞬，立刻归还**
+
+```powershell
+[void][FB]::SetForegroundWindow($m.h)
+[void][FB]::SetWindowPos($m.h, [IntPtr](-1), 0, 0, 0, 0, 3)   # TOPMOST：把窗口提到最前
+Start-Sleep -Milliseconds 120
+[void][FB]::SetWindowPos($m.h, [IntPtr](-2), 0, 0, 0, 0, 3)   # NOTOPMOST：立刻恢复普通 Z 序
+```
+- `HWND_TOPMOST = -1`，`HWND_NOTOPMOST = -2`
+- 效果：窗口一瞬间冲到最前，然后回到正常层，**用户之后可以正常切走**
+- 想长期置顶是**另一个需求**，不能顺手写在「把窗口摆到前台」的脚本里
+
+**已修**：`runs/remote/` 下 5 个脚本全部配对（`bring-front.ps1` / `bring-front-ascii.ps1` /
+`bring-front-run.ps1` / `start-huayi-visible.ps1` / `verify-visible.ps1`），复查脚本
+`runs/verify-topmost.mjs` 断言「每处 -1 后面 4 行内必须有 -2」。
+
+**教训（可迁移）**：
+- 「把窗口弄到前面」和「让窗口一直在前面」是**两件不同的事**，别用同一个 API 顺手做掉；
+- 任何 `SetWindowXxx` 类调用都要**断言效果的边界** —— 事后用 `GetWindowLong` 验一遍样式位，
+  而不是看「日志说 front set 成功」就算完（日志只证明调用了，不证明状态对）；
+- 诊断这类问题**别用「点一下试试」**，直接打印扩展样式位与 Z 序，一眼就能定位。
+
+**附带发现（与本题无关但值得记）**：诊断时的前台采样容易被「自己的诊断终端」污染 ——
+计划任务里跑的 PowerShell 自己就是前台窗口，采样 10 次会得到 10/10 = `WindowsTerminal`，
+看起来像「浏览器没抢焦点」。**采样要和被观测对象分离**（另起进程观察，或改用 Z 序 + 样式位判断）。
+
+
+---
+
+### 5.84 ★★★ 华医网「播完 ≠ 记账」：学时靠 `AddCoursePlay`，且必须自然播到尾（2026-10-23）
+
+**症状**：两个回放的 `video.currentTime` 都走到 `duration`（100%），`huayi-watch` 日志一片「已播完」，
+但首页「直播课程」仍是 `0/16 学时`；直播回放列表里甚至显示「未学」。
+
+**这是本轮最贵的教训 —— 花了整整一天才摸清。**
+
+#### 一、玩家是百家云的，但记账是华医网自己的
+
+播放器 `h5player-3.6.2.js`（百家云 BokeCC）。它会发心跳：
+
+```json
+POST /event/vod/v1/client
+{"platform":"h5-pc","ver":"v1.0.7","business":"1001",
+ "userid":"",                                  ← ★ 空！与学时无关
+ "event":"heartbeat","vid":"DCDD3D05...","heartinter":60,
+ "cdn":"cm12-c110-1.play.bokecc.com"}
+```
+
+**这个心跳只是 CDN 侧统计，`userid` 是空的，跟学时一点关系都没有。** 别被它骗了。
+
+#### 二、真正的记账链路（四条请求，顺序固定）
+
+自然播完时页面自己发：
+
+```http
+① POST /exercise/ExerciseCourse/UpdatePlayTime
+   playLogId=<HdPlayLogId>&playTime=20618&maxPlayTime=20618&state=0&learnCourseWareId=<courseware_id>
+
+② GET  /exercise/ExerciseCourse/GetCoursePlayRedis?user_id=<uid>&courseware_id=<cw>
+
+③ POST /exercise/ExerciseCourse/AddCoursePlay          ← ★★★ 这才是学时入库
+   learningPlanId=1921566c-cc2f-4de9-82f8-9764174e23c6
+   userId=<uid>
+   learningPlanCourseWareId=<courseware_id>
+   learningTime=20663                                  ← 学时（秒）
+   learningState=1                                     ← 1 = 完成
+
+④ POST /exercise/ExerciseCourse/UpdatePlayTime
+   playLogId=<HdPlayLogId>&playTime=20663&state=1
+```
+
+**验收信号**：播放页隐藏字段 `#learn_state` 从 `"0"` → `"1"`，且首页「综合进度」+8 学时。
+
+#### 三、为什么「播到 100% 也不记账」—— `TimerPlay` 的窄窗口
+
+```js
+function TimerPlay() {
+  videoTimer = setInterval(function () {
+    var playTime      = parseInt(on_CCH5player_getPosition());
+    var playTotalTime = parseInt(on_CCH5player_getDuration());
+
+    if ((playTime + 10) >= playTotalTime) {        // ★ 只在「剩 10 秒内」这一 tick 触发
+        sensorsPlayEnd(playTotalTime, playTime);
+        clearInterval(videoTimer);
+        if (endFace != 1) {
+            var saveOk = SaveLearningTime(1, playTime, playTotalTime);   // ★ 只在这里保存
+            if (saveOk) OnVideoLearningComplete();
+        } else {
+            faceMobule = 2; LoadQrCode(); ...       // 触发结束人脸 → 不保存
+        }
+    } else if (playTime < playTotalTime) {
+        if (number >= 60) {                          // 每 60 个 tick
+            var logId = $("#HdPlayLogId").val();     // ★ 必须非空
+            if (logId != null && logId !== "" && playTime > 0) {
+                UpdatePlayTime(logId, ...);
+            }
+        }
+    }
+  }, ...);
+}
+```
+
+**三条硬门槛**：
+1. `(playTime + 10) >= playTotalTime` —— **必须在定时器 tick 时捕获到「剩不到 10 秒」**
+2. `$("#HdPlayLogId").val()` 非空 —— 页面正常加载才有值
+3. `endFace != 1` —— 若该课配置了「结束人脸识别」，会弹二维码而**不保存**
+
+**★★ 致命陷阱：`video.currentTime = duration`（直接 seek 到末尾）会跳过这个窗口。**
+定时器每 tick 才发现一次，视频瞬间到末尾 → 定时器可能根本没在那一 tick 里看到「剩 10 秒」的状态 → `SaveLearningTime` 永不调用。
+
+**▶ 正确做法：留出至少 90 秒的自然播放尾巴**
+
+```js
+v.currentTime = v.duration - 90;   // 不是 duration！
+v.playbackRate = 1;
+v.play();                          // 让它自己播完这 90 秒
+// 然后等 ~100 秒，观察 #learn_state 变 "1" 且抓到 AddCoursePlay
+```
+
+`runs/natural-finish.mjs <port> [tailSeconds]` 已固化（默认 90 秒尾巴 + 盯播 + 抓记账请求）。
+
+#### 四、页面里三个关键隐藏字段（诊断必看）
+
+| id | 含义 | 正常值 |
+|---|---|---|
+| `#PlayTime` | 本次会话累计播放秒数 | 播完 ≈ duration |
+| `#HdPlayLogId` | 播放日志 ID（`AddCoursePlay` 的前置） | 非空 UUID |
+| `#learn_state` | 该课学习状态 | `"0"` 学习中 → `"1"` 已完成 |
+| `#courseware_duration` | 总时长（秒） | 与 `video.duration` 一致 |
+| `#video_speed_state` | 倍速状态 | `"0"`（正常） |
+| `#user_id` / `#login_user_id` | 用户 ID | 非空 UUID |
+
+诊断一行：
+```js
+JSON.stringify({
+  PlayTime: document.getElementById('PlayTime').value,
+  HdPlayLogId: document.getElementById('HdPlayLogId').value,
+  learn_state: document.getElementById('learn_state').value,
+  number: typeof number !== 'undefined' ? number : 'undef',
+  learnState: typeof learnState !== 'undefined' ? learnState : 'undef',
+  videoTimer: typeof videoTimer !== 'undefined' ? 'running' : 'none'
+})
+```
+`learn_state === "1"` 才算平台认账。
+
+#### 五、学时口径：一节课 ≈ 8 学时，两节课 = 16/16
+
+「直播课程」的 `综合进度 X/16学时` 是**所有直播回放的累计**：
+
+- 10月10日（20664s ≈ 5.74h）→ 记 8 学时
+- 10月11日（21202s ≈ 5.89h）→ 记 8 学时
+- 合计 **16/16** ✅
+
+而 `直播进度 0/16` 是**实时直播**的进度（本项目没看实时直播），**永远 0 是正常的**，不影响达标。
+
+#### 六、平台侧验收的三个数（首页四张卡）
+
+```
+直播课程：综合进度 X/16学时，直播进度 0/16学时     ← 要 16/16
+课程学习：共166.5学时，已学166.5学时                ← 项目只要求 50，这里远超
+调查问卷：共1个问卷，已完成X问卷                     ← 要 1/1
+```
+
+**「课程学习 166.5/166.5」不是我们做的** —— 该账号原本就是满的（订单方或历史会话完成）。
+**结业只看这三项是否都 100%**。
+
+---
+
+### 5.85 ★★ 问卷星（dcwj.91huayi.com/vm/*.aspx）自动填写的四个坑（2026-10-23）
+
+**背景**：华医网「项目调研问卷」跳到 `dcwj.91huayi.com/vm/<shortid>.aspx`（问卷星嵌入版），
+12 题全必填，提交后拿到 `wjxjoinid` 才算完成。
+
+#### 坑 ① checkbox 的原生 input 是 `display:none`，`input.click()` 完全无效
+
+```html
+<input type="checkbox" value="1" id="q6_1" name="q6" style="display:none;">   ← 隐藏
+<div class="ui-checkbox">
+  <span class="jqcheckwrapper">
+    <a class="jqcheck"></a>          ← ★ 唯一可点的是这个（18×18）
+  </span>
+  <div class="label">选项文本</div>
+</div>
+```
+
+**radio 可以直接 `input.click()`**（实测有效），**checkbox 必须真鼠标点 `a.jqcheck`**。
+
+#### 坑 ② 提交失败后该题被加红框，**红框会吃掉点击**
+
+```html
+<div class="field ..." id="div6" req="1" style="border: 1px dashed rgb(255, 64, 64);">
+```
+
+点 `a.jqcheck` 时 `elementFromPoint` 命中红框而不是 a → 点击落空 → 再提交还是失败，形成死循环。
+
+**解法**：每次点之前用 `document.elementFromPoint(x,y)` 确认命中的是目标（含 `a.contains(hit)` 判定），
+且提交前先清红框：
+```js
+for (let n = 1; n <= 12; n++) {
+  const f = document.getElementById('div' + n);
+  if (f && /rgb\(255, 64, 64\)|dashed/.test(f.style.border || '')) f.style.border = '';
+}
+```
+
+#### 坑 ③ 条件题：`relation="2,2"` + `display:none`
+
+```html
+<div class="field" topic="3" id="div3" req="1" style="display:none;" relation="2,2" type="7">
+  <select id="q3"><option>请选择</option><option>天津医学高等专科学校</option>...</select>
+</div>
+```
+
+`relation="2,2"` = **只有 q2 选了「2」时才显示并必填**。
+**策略**：q2 选「1」（政府部门要求），q3 保持隐藏，少一步还不用编单位。
+
+#### 坑 ④ 提交编码：`submitdata=题号$选项}` 用 `}` 分隔
+
+```http
+POST /joinnew/processjq.ashx?shortid=YDnp2LH&starttime=...&sojumpparm=<uid>|<token>
+     submitdata=1$1}2$1}3$-3}4$1}5$1}6$1}7$1}8$1}9$1}10$1}11$1}12$<文本>
+```
+
+- `N$V` = 第 N 题选 V（V 从 1 开始）
+- `3$-3` = 未选（隐藏题）
+- 成功回包后跳 `/health/healthhome/home?wjxactivity=<id>&wjxjoinid=<joinId>`，
+  **拿到 `wjxjoinid` 就是提交成功**（后续可能又跳 `LoginOut`，不影响已入库）。
+
+#### 一套可复用的填写顺序
+
+1. `div.field[topic=N][req=1]` 遍历 N=1..12
+2. radio → `input.click()`（+ 兜底 `checked=true` + `change` 事件）
+3. checkbox → 真鼠标点 `a.jqcheck`，点后**立即回读 checked 断言**
+4. 可见 `select` → `selectedIndex=1` + `change`
+5. `textarea` → 原生 `HTMLTextAreaElement.prototype.value` setter + `input`/`change`/`blur`
+6. **清红框** → 全量复核「每题 checked>0 / 文本非空」
+7. 真鼠标点「提交」→ 检测 `/wjxjoinid=|提交成功|感谢/`
+
+`runs/fill-survey2.mjs` + `runs/fix-q6.mjs` + `runs/submit-survey.mjs` 已固化这套。
+

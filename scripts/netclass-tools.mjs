@@ -14,24 +14,35 @@
  * 约定：调试端口默认 9223，只监听 127.0.0.1；PC 侧用 SSH 转发把端口接到本机后再跑本工具。
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { argv, exit } from 'node:process';
 
 
 const __ROOT2 = (() => { const u = import.meta.url; const f = u.replace('file:///', '').replace(/\//g, '\\'); return f.slice(0, f.lastIndexOf('\\')); })();
-const NC_LOCAL_CFG = (() => { try { const p = __ROOT2 + '/../config/local.json'; const fs2 = require('node:fs'); return fs2.existsSync(p) ? JSON.parse(fs2.readFileSync(p, 'utf8')) : null; } catch { return null; } })();
-const NC_SSH_TARGET = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.target) || 'user@host';
+// ★ 2026-11-22 修：这里原来用 `const fs2 = require('node:fs')` —— **ESM 里 require 未定义**，
+//   异常被 catch 吞掉后 NC_LOCAL_CFG 恒为 null，于是永远走 'user@host' 和 C:/Users/YOURNAME 兜底。
+//   这几个文件本来就 import 了 existsSync/readFileSync，直接用即可；缺配置则明确退出。
+const NC_LOCAL_CFG = (() => {
+  try { const p = join(__ROOT2, '..', 'config', 'local.json'); return existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : null; } catch { return null; }
+})();
+const NC_SSH_TARGET = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.target) || process.env.NC_SSH_TARGET || '';
 const NC_SSH_HOST = NC_SSH_TARGET.split('@').pop();
-const NC_SSH_USER = NC_SSH_TARGET.split('@')[0];
-const NC_SSH_KEY = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.keyPath) || 'C:/Users/YOURNAME/.ssh/id_ed25519';
+const NC_SSH_USER = NC_SSH_TARGET.includes('@') ? NC_SSH_TARGET.split('@')[0] : '';
+const NC_SSH_KEY = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.keyPath) || process.env.NC_SSH_KEY_PATH || '';
 const NC_SSH_ALIAS = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.hostKeyAlias) || NC_SSH_HOST;
-const NC_SSH_KNOWN = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.knownHostsFile) || 'C:/Users/YOURNAME/.ssh/known_hosts';
+const NC_SSH_KNOWN = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.knownHostsFile) || '';
+if (!NC_SSH_TARGET || !NC_SSH_KEY || !NC_SSH_KNOWN) {
+  console.error('缺 SSH 配置：config/local.json 的 ssh.target / ssh.keyPath / ssh.knownHostsFile');
+  process.exit(1);
+}
+const WINUSER = NC_SSH_USER;   // 远端 Windows 用户名从 ssh.target 推导，不再写死 %USERNAME%
 const LAPTOP = NC_SSH_TARGET;
 const KEY = NC_SSH_KEY;
 const HOST_KEY_ALIAS = NC_SSH_ALIAS;
-const CHROME = 'C:\\Users\\YOURNAME\\AppData\\Local\\Programs\\OCS Desktop\\resources\\bin\\chrome\\chrome\\chrome.exe';
-const EXT_DIR = 'C:/Users/YOURNAME/AppData/Roaming/OCS Desktop/downloads/extensions/tampermonkey';
-const PROFILE_ROOT = 'C:\\Users\\YOURNAME\\AppData\\Roaming\\OCS Desktop\\userDataDirs';
+const CHROME = `C:\\Users\\${WINUSER}\\AppData\\Local\\Programs\\OCS Desktop\\resources\\bin\\chrome\\chrome\\chrome.exe`;
+const EXT_DIR = `C:/Users/${WINUSER}/AppData/Roaming/OCS Desktop/downloads/extensions/tampermonkey`;
+const PROFILE_ROOT = `C:\\Users\\${WINUSER}\\AppData\\Roaming\\OCS Desktop\\userDataDirs`;
 const PORT = 9223;
 
 const SSH_ARGS = [
@@ -39,7 +50,7 @@ const SSH_ARGS = [
   '-o', 'PreferredAuthentications=publickey', '-o', 'ConnectTimeout=8', '-o', 'ConnectionAttempts=1',
   '-o', 'StrictHostKeyChecking=yes', '-o', 'HostKeyAlgorithms=ssh-ed25519',
   '-o', `HostKeyAlias=${HOST_KEY_ALIAS}`,
-  '-o', 'UserKnownHostsFile=C:/Users/YOURNAME/.ssh/known_hosts',
+  '-o', 'UserKnownHostsFile=' + NC_SSH_KNOWN,
   '-i', KEY, LAPTOP
 ];
 

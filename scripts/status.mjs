@@ -14,31 +14,72 @@
  * 退出码：0 = 无告警；1 = 有告警（端口不通 / 模块未加载 / 重复注册 / 服务不可用）
  */
 import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve as pathResolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+/**
+ * ★ 2026-11-22 修：这里原来是
+ *     const fs2 = require('node:fs')
+ * 在 **ESM 里 `require` 未定义** → 抛 ReferenceError → 被外层 try/catch 吞掉 →
+ * NC_LOCAL_CFG 永远是 null → 永远走带 `C:/Users/YOURNAME/...` 的兜底值。
+ * 结果就是这个文件的 SSH 段**从落地起就没成功过一次**（永远报
+ * `Identity file C:/Users/YOURNAME/.ssh/id_ed25519 not accessible`）。
+ *
+ * 现在改用真正的 ESM import，并且**不再保留 YOURNAME 兜底**：配置缺失就明确跳过 SSH 段
+ * 并报一行原因，而不是拿一个假路径去连、把错误伪装成"网络问题"。
+ */
+const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO = pathResolve(HERE, '..');
 
-const __ROOT2 = (() => { const u = import.meta.url; const f = u.replace('file:///', '').replace(/\//g, '\\'); return f.slice(0, f.lastIndexOf('\\')); })();
-const NC_LOCAL_CFG = (() => { try { const p = __ROOT2 + '/../config/local.json'; const fs2 = require('node:fs'); return fs2.existsSync(p) ? JSON.parse(fs2.readFileSync(p, 'utf8')) : null; } catch { return null; } })();
-const NC_SSH_TARGET = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.target) || 'user@host';
-const NC_SSH_HOST = NC_SSH_TARGET.split('@').pop();
-const NC_SSH_USER = NC_SSH_TARGET.split('@')[0];
-const NC_SSH_KEY = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.keyPath) || 'C:/Users/YOURNAME/.ssh/id_ed25519';
-const NC_SSH_ALIAS = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.hostKeyAlias) || NC_SSH_HOST;
-const NC_SSH_KNOWN = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.knownHostsFile) || 'C:/Users/YOURNAME/.ssh/known_hosts';
+const NC_LOCAL_CFG = (() => {
+  try {
+    const p = join(REPO, 'config', 'local.json');
+    return existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : null;
+  } catch { return null; }
+})();
+const SSH_CFG = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh) || null;
+const NC_SSH_TARGET = (SSH_CFG && SSH_CFG.target) || null;
+const NC_SSH_HOST = NC_SSH_TARGET ? NC_SSH_TARGET.split('@').pop() : null;
+const NC_SSH_KEY = (SSH_CFG && SSH_CFG.keyPath) || null;
+const NC_SSH_ALIAS = (SSH_CFG && SSH_CFG.hostKeyAlias) || NC_SSH_HOST;
+const NC_SSH_KNOWN = (SSH_CFG && SSH_CFG.knownHostsFile) || null;
+
+/** SSH 段可用性：配置齐全 且 没加 --no-ssh */
+const SSH_CFG_MISSING = [];
+if (!NC_SSH_TARGET) SSH_CFG_MISSING.push('ssh.target');
+if (!NC_SSH_KEY) SSH_CFG_MISSING.push('ssh.keyPath');
+if (!NC_SSH_KNOWN) SSH_CFG_MISSING.push('ssh.knownHostsFile');
+
 const A = new Set(process.argv.slice(2));
-const SKIP_SSH = A.has('--no-ssh');
+const SKIP_SSH = A.has('--no-ssh') || SSH_CFG_MISSING.length > 0;
 
-const PORTS = [
-  { port: 9224, name: 'shengsheng' },
-  { port: 9225, name: 'qiyang' },
-  { port: 9226, name: 'webtrn' }
-];
+// 端口不再写死：从 platforms.json 取（这三个平台是 status 的监控集合）。
+// 注册表读不到才退回原来的字面量，保证这个命令在任何情况下都能跑。
+const MONITOR_KEYS = ['shengsheng', 'qiyang', 'webtrn'];
+const PORTS = (() => {
+  try {
+    const reg = JSON.parse(readFileSync(join(REPO, 'config', 'platforms.json'), 'utf8'));
+    const out = MONITOR_KEYS
+      .filter((k) => reg[k] && Number.isFinite(Number(reg[k].cdp)))
+      .map((k) => ({ port: Number(reg[k].cdp), name: k }));
+    if (out.length) return out;
+  } catch { /* 落回下面的字面量 */ }
+  return [
+    { port: 9224, name: 'shengsheng' },
+    { port: 9225, name: 'qiyang' },
+    { port: 9226, name: 'webtrn' }
+  ];
+})();
+const PORT_CSV = PORTS.map((p) => p.port).join(',');
+
 const LOADER_ID = 'ebikemhgdinpnfeanicfkahlehcojjmn';
 const SSH_ARGS = [
   '-T', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'PasswordAuthentication=no',
   '-o', 'PreferredAuthentications=publickey', '-o', 'ConnectTimeout=8', '-o', 'ConnectionAttempts=1',
   '-o', 'StrictHostKeyChecking=yes', '-o', 'HostKeyAlgorithms=ssh-ed25519',
   '-o', 'HostKeyAlias=' + NC_SSH_ALIAS,
-  '-o', 'UserKnownHostsFile=C:/Users/YOURNAME/.ssh/known_hosts',
+  '-o', 'UserKnownHostsFile=' + NC_SSH_KNOWN,     // ★ 原来这里写死了 %USERNAME%，覆盖了配置值
   '-i', NC_SSH_KEY,
   NC_SSH_TARGET
 ];
@@ -168,7 +209,7 @@ $ErrorActionPreference='Continue'
 $c = Get-Process chrome -ErrorAction SilentlyContinue
 Write-Output ('CHROME|' + ($c | Measure-Object).Count)
 $c | Group-Object SessionId | ForEach-Object { Write-Output ('CHROME_SESSION|' + $_.Name + '|' + $_.Count) }
-foreach ($p in @(9224,9225,9226)) {
+foreach ($p in @(${PORT_CSV})) {
   try { Invoke-WebRequest ("http://127.0.0.1:{0}/json/version" -f $p) -UseBasicParsing -TimeoutSec 3 | Out-Null; Write-Output ('PORT|' + $p + '|READY') }
   catch { Write-Output ('PORT|' + $p + '|down') }
 }
@@ -236,6 +277,12 @@ for (const s of states) {
     verdict,
     l.last3 && l.last3.length ? `最近: ${l.last3[l.last3.length - 1]}` : ''
   ));
+}
+
+if (SKIP_SSH && SSH_CFG_MISSING.length) {
+  // 明确说清为什么跳过，而不是拿假路径去连、把配置问题伪装成网络问题
+  console.log('\n== 笔记本侧（SSH）==');
+  console.log(`  已跳过：config/local.json 缺 ${SSH_CFG_MISSING.join(' / ')}（补齐后才做远程体检）`);
 }
 
 if (!SKIP_SSH) {

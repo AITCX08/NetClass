@@ -112,7 +112,8 @@ export function removeInstance(id) {
 }
 
 // ---------------------------------------------------------------- 端口
-async function portInUse(port) {
+/** 端口是否已被 CDP 实例占用（netclass up --port 需要它做前置检查，故导出） */
+export async function portInUse(port) {
   try {
     const c = new AbortController();
     const t = setTimeout(() => c.abort(), 1200);

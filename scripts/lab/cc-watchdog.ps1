@@ -1,4 +1,4 @@
-# cc-watchdog.ps1 - 让单实例驱动持续跑：掉线/冻结就重启，抓不到进展就记录
+﻿# cc-watchdog.ps1 - 让单实例驱动持续跑：掉线/冻结就重启，抓不到进展就记录
 # 用法: powershell -NoProfile -File scripts\cc-watchdog.ps1 [-Hours 12] [-Tag A]
 param(
   [int]$Hours = 12,
