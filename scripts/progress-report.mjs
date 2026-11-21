@@ -16,9 +16,32 @@ const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf('--' + k); return i >= 0 ? Number(argv[i + 1] || d) : d; };
 const EVERY = arg('every', 300);
 
-const { appendFileSync, mkdirSync } = await import('node:fs');
+const { appendFileSync, mkdirSync, readFileSync } = await import('node:fs');
 mkdirSync('runs', { recursive: true });
 const human = (m) => console.log('[' + new Date().toLocaleTimeString('zh-CN', { hour12: false }) + '] ' + m);
+
+// ★ 2026-11-22：端口和域名正则不再写死，从 platforms.json 取（单一事实源）。
+//   原来这里硬编码 9228/9227/9224，改端口要动代码；现在改 config 就行。
+//   注册表读不到才退回旧字面量，保证这个命令永远能跑。
+const REG = (() => {
+  try { return JSON.parse(readFileSync('config/platforms.json', 'utf8')); } catch { return {}; }
+})();
+const cdpOf = (k, d) => { const v = REG[k] && REG[k].cdp; return Number.isFinite(Number(v)) ? Number(v) : d; };
+const hostRe = (k, d) => {
+  const h = REG[k] && REG[k].host;
+  return h ? new RegExp(String(h).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) : d;
+};
+const CC_PORT = cdpOf('ccjyxy', 9228);
+const CX_PORT = cdpOf('chaoxing', 9227);
+const SS_PORT = cdpOf('shengsheng', 9224);
+const CC_RE = hostRe('ccjyxy', /ccjyxy/);
+const CX_RE = hostRe('chaoxing', /chaoxing/);
+const SS_RE = hostRe('shengsheng', /shengshengketang/);
+
+// ★ P5：统一验收层。**只驱动控制台判读**；runs/progress.jsonl 的字段集合保持不变（规格 §5.5 / §8）。
+//   verify 挂了也不能影响落盘 → 整块 try/catch，失败就退回原来的三人读摘要。
+let verifyAll = null;
+try { verifyAll = (await import('./verify.mjs')).verify; } catch (_) { verifyAll = null; }
 
 async function withTab(port, urlRe, expr, ms = 15000) {
   try {
@@ -74,8 +97,8 @@ const SS_EXPR = `(function(){
 
 async function ssAll() {
   try {
-    const list = await (await fetch('http://127.0.0.1:9224/json/list', { signal: AbortSignal.timeout(8000) })).json();
-    const pages = list.filter(t => t.type === 'page' && /shengshengketang/.test(t.url));
+    const list = await (await fetch('http://127.0.0.1:' + SS_PORT + '/json/list', { signal: AbortSignal.timeout(8000) })).json();
+    const pages = list.filter(t => t.type === 'page' && SS_RE.test(t.url));
     const out = [];
     for (const p of pages) {
       try {
@@ -95,18 +118,27 @@ async function ssAll() {
 human('=== 三平台进度记录器启动（每 ' + EVERY + ' 秒一条）===');
 for (;;) {
   const snap = { ts: new Date().toISOString() };
-  const cc = await withTab(9228, /ccjyxy/, CC_EXPR);
-  const cx = await withTab(9227, /chaoxing/, CX_EXPR);
+  const cc = await withTab(CC_PORT, CC_RE, CC_EXPR);
+  const cx = await withTab(CX_PORT, CX_RE, CX_EXPR);
   const ss = await ssAll();
   try { snap.cc = cc ? JSON.parse(cc) : null; } catch (_) { snap.cc = null; }
   try { snap.cx = cx ? JSON.parse(cx) : null; } catch (_) { snap.cx = null; }
   snap.ss = ss;
   try { appendFileSync('runs/progress.jsonl', JSON.stringify(snap) + '\n'); } catch (_) { }
 
+  // 统一验收判读（不写入 jsonl，字段集合保持原样）
+  let vline = '';
+  if (verifyAll) {
+    try {
+      const vs = await Promise.all(['ccjyxy', 'chaoxing', 'shengsheng'].map((k) => verifyAll(k)));
+      vline = '   || verify ' + vs.map((v) => v.platform + '=' + (v.pct === null ? v.status : v.pct + '%')).join(' ');
+    } catch (_) { vline = ''; }
+  }
+
   const c1 = snap.cc ? `长春 学时${snap.cc.learned}/90 完成${snap.cc.done}/90 当前段${snap.cc.cur}/${snap.cc.dur}@${snap.cc.rate}x${snap.cc.paused ? '(停)' : ''}` : '长春 ✗';
   const c2 = snap.cx ? `学习通 ${snap.cx.done}/${snap.cx.todo + snap.cx.done} 已完成（待做${snap.cx.todo}）视频${snap.cx.cur}/${snap.cx.dur}` : '学习通 ✗';
   const c3 = ss.length ? 'shengsheng ' + ss.map(s => `${s.cur}/${s.dur}@${s.rate}x`).join(' · ') : 'shengsheng ✗';
-  human(c1 + '   |   ' + c2 + '   |   ' + c3);
+  human(c1 + '   |   ' + c2 + '   |   ' + c3 + vline);
 
   await new Promise(r => setTimeout(r, EVERY * 1000));
 }

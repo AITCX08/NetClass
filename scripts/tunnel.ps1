@@ -1,4 +1,4 @@
-# tunnel.ps1 — 把笔记本上的 Chrome 调试端口转发到本机，并保持存活。
+﻿# tunnel.ps1 — 把笔记本上的 Chrome 调试端口转发到本机，并保持存活。
 #
 # 用法:
 #   powershell -File scripts/tunnel.ps1 -Port 9228

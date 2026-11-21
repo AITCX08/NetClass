@@ -39,14 +39,15 @@
 import { readFileSync, statSync, existsSync } from 'node:fs';
 import { join, dirname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateProfile } from './profile-schema.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const ROOT = join(__dirname, '..');
 export const FILE = join(ROOT, 'config', 'platforms.json');
 
 /** 合法枚举 */
-export const CAPABILITIES = ['video', 'quiz', 'homework', 'post', 'exam'];
-export const COMPLETION_KINDS = ['pageText', 'api', 'domClass', 'domAbsent'];
+export const CAPABILITIES = ['video', 'quiz', 'homework', 'post', 'exam', 'live_replay'];
+export const COMPLETION_KINDS = ['pageText', 'api', 'domClass', 'domAbsent', 'videoEnd'];
 
 /** 每个平台块必须有的字段 */
 const REQUIRED = ['label', 'host', 'cdp', 'capabilities', 'driver', 'watchers', 'completion', 'constraints', 'auth'];
@@ -142,7 +143,11 @@ export function expandArgs(args, platform) {
 /**
  * 把 driver/watchers 里的 `script` 变成 argv[0] 的相对路径。
  * 规则（与 docs/AGENT-ARCHITECTURE.md §4 的 startDriver 一致）：裸文件名 → scripts/<name>；
- * 带目录的（scripts/… 、runs/…、lab/…）原样返回。
+ * 带目录的（scripts/…、runs/…）原样返回。
+ * ★ 2026-11-22 修正注释：**`lab/…` 不会被补成 `scripts/lab/…`**。lab 脚本的真实路径是
+ *   `scripts/lab/<name>`，所以注册表里必须写全 `scripts/lab/xx.mjs`；只写 `lab/xx.mjs`
+ *   会被 resolveScript 解析到根本不存在的 `<repo>/lab/xx.mjs`。原注释写成「lab/… 原样返回」
+ *   会误导人以为有特判。
  * 结果就是 supervisor spawn 时用的字面量（例：'scripts/cc-cycle.mjs'）。
  */
 export function scriptArg(script) {
@@ -398,6 +403,13 @@ export function validate() {
     }
 
     if (p._probeUnverified) warnings.push(`${tag} 整块标了 _probeUnverified，接入前需实测`);
+
+    // ── 四维定级（profile）────────────────────
+    // 枚举与规则都在 scripts/profile-schema.mjs，本文件不重复定义。
+    // 缺 profile 不算错：规格 §4.3 允许分平台灰度，plan.mjs 退化为读 constraints。
+    const pv = validateProfile(k, p.profile, cs, { capabilities: p.capabilities });
+    for (const e of pv.errors) errors.push(e);
+    for (const w of pv.warnings) warnings.push(w);
   }
 
   for (const [port, owners] of portMap) {

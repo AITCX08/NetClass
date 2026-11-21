@@ -1,4 +1,4 @@
-# cc-launch.ps1 - 停掉现有 cc-auto 驱动、清认领表、按需重启 A/B 两个实例
+﻿# cc-launch.ps1 - 停掉现有 cc-auto 驱动、清认领表、按需重启 A/B 两个实例
 # 用法:
 #   powershell -NoProfile -File scripts\cc-launch.ps1 -Status
 #   powershell -NoProfile -File scripts\cc-launch.ps1 -Restart -WaitSec 90

@@ -1,10 +1,10 @@
 /**
  * netclass-ctl.mjs — NetClass 部署控制（PC 侧 → 笔记本 OCS 浏览器）
  *
- * 前置：PC 侧起好 SSH 转发
- *   ssh -N -i C:/Users/YOURNAME/.ssh/id_ed25519 \
- *       -o HostKeyAlias=192.168.1.100 -o UserKnownHostsFile=C:/Users/YOURNAME/.ssh/known_hosts \
- *       -L 9224:127.0.0.1:9224 NC_SSH_TARGET
+ * 前置：PC 侧起好 SSH 转发（参数一律来自 config/local.json 的 ssh.*）
+ *   ssh -N -i <ssh.keyPath> \
+ *       -o HostKeyAlias=<ssh.hostKeyAlias> -o UserKnownHostsFile=<ssh.knownHostsFile> \
+ *       -L 9224:127.0.0.1:9224 <ssh.target>
  * 端口约定：SSH 转发 9224 → 笔记本 Chrome 调试端口 9224
  *
  * 用法：
@@ -24,22 +24,33 @@ import { fileURLToPath } from 'node:url';
 
 
 const __ROOT2 = (() => { const u = import.meta.url; const f = u.replace('file:///', '').replace(/\//g, '\\'); return f.slice(0, f.lastIndexOf('\\')); })();
-const NC_LOCAL_CFG = (() => { try { const p = __ROOT2 + '/../config/local.json'; const fs2 = require('node:fs'); return fs2.existsSync(p) ? JSON.parse(fs2.readFileSync(p, 'utf8')) : null; } catch { return null; } })();
-const NC_SSH_TARGET = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.target) || 'user@host';
+// ★ 2026-11-22 修：这里原来用 `const fs2 = require('node:fs')` —— **ESM 里 require 未定义**，
+//   异常被 catch 吞掉后 NC_LOCAL_CFG 恒为 null，于是永远走 'user@host' 和 C:/Users/YOURNAME 兜底。
+//   这几个文件本来就 import 了 existsSync/readFileSync，直接用即可；缺配置则明确退出。
+const NC_LOCAL_CFG = (() => {
+  try { const p = join(__ROOT2, '..', 'config', 'local.json'); return existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : null; } catch { return null; }
+})();
+const NC_SSH_TARGET = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.target) || process.env.NC_SSH_TARGET || '';
 const NC_SSH_HOST = NC_SSH_TARGET.split('@').pop();
-const NC_SSH_USER = NC_SSH_TARGET.split('@')[0];
-const NC_SSH_KEY = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.keyPath) || 'C:/Users/YOURNAME/.ssh/id_ed25519';
+const NC_SSH_USER = NC_SSH_TARGET.includes('@') ? NC_SSH_TARGET.split('@')[0] : '';
+const NC_SSH_KEY = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.keyPath) || process.env.NC_SSH_KEY_PATH || '';
 const NC_SSH_ALIAS = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.hostKeyAlias) || NC_SSH_HOST;
-const NC_SSH_KNOWN = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.knownHostsFile) || 'C:/Users/YOURNAME/.ssh/known_hosts';
+const NC_SSH_KNOWN = (NC_LOCAL_CFG && NC_LOCAL_CFG.ssh && NC_LOCAL_CFG.ssh.knownHostsFile) || '';
+if (!NC_SSH_TARGET || !NC_SSH_KEY || !NC_SSH_KNOWN) {
+  console.error('缺 SSH 配置：config/local.json 的 ssh.target / ssh.keyPath / ssh.knownHostsFile');
+  process.exit(1);
+}
+const WINUSER = NC_SSH_USER;   // 远端 Windows 用户名从 ssh.target 推导，不再写死 %USERNAME%
 const PORT = 9224;
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..');
 
 const LAPTOP = NC_SSH_TARGET;
 const SSH_KEY = NC_SSH_KEY;
-const CHROME = 'C:\\Users\\YOURNAME\\AppData\\Local\\Programs\\OCS Desktop\\resources\\bin\\chrome\\chrome\\chrome.exe';
-const EXT_TAMPERMONKEY = 'C:/Users/YOURNAME/AppData/Roaming/OCS Desktop/downloads/extensions/tampermonkey';
-const PROFILE_ROOT = 'C:\\Users\\YOURNAME\\AppData\\Roaming\\OCS Desktop\\userDataDirs';
+const CHROME = `C:\\Users\\${WINUSER}\\AppData\\Local\\Programs\\OCS Desktop\\resources\\bin\\chrome\\chrome\\chrome.exe`;
+const EXT_TAMPERMONKEY = `C:/Users/${WINUSER}/AppData/Roaming/OCS Desktop/downloads/extensions/tampermonkey`;
+const PROFILE_ROOT = `C:\\Users\\${WINUSER}\\AppData\\Roaming\\OCS Desktop\\userDataDirs`;
+const WORK = `C:\\Users\\${WINUSER}\\AppData\\Local\\TaskMesh\\netclass`;
 const TM_ID = 'dhdgffkkebhmkfjojejmpbldmpobfkfo';
 const SHELL_LOCAL = join(REPO, 'userscript', 'netclass.shell.user.js');
 
@@ -48,7 +59,7 @@ const SSH_ARGS = [
   '-o', 'PreferredAuthentications=publickey', '-o', 'ConnectTimeout=8', '-o', 'ConnectionAttempts=1',
   '-o', 'StrictHostKeyChecking=yes', '-o', 'HostKeyAlgorithms=ssh-ed25519',
   '-o', 'HostKeyAlias=' + NC_SSH_ALIAS,
-  '-o', 'UserKnownHostsFile=C:/Users/YOURNAME/.ssh/known_hosts',
+  '-o', 'UserKnownHostsFile=' + NC_SSH_KNOWN,
   '-i', SSH_KEY, LAPTOP
 ];
 
@@ -72,10 +83,10 @@ function psFile(code, timeout = 240000) {
   const chunk = 1200;
   const parts = [];
   for (let i = 0; i < b64.length; i += chunk) parts.push(b64.slice(i, i + chunk));
-  const winPath = 'C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass\\_task.ps1';
+  const winPath = `${WORK}\\_task.ps1`;
 
   // 第 1 步：重置目标文件（ASCII 避免 BOM 污染 base64）
-  ps(`New-Item -ItemType Directory -Force -Path 'C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass' | Out-Null; Set-Content -Path '${winPath}' -Value '' -Encoding ASCII; 'reset'`, 30000);
+  ps(`New-Item -ItemType Directory -Force -Path '${WORK}' | Out-Null; Set-Content -Path '${winPath}' -Value '' -Encoding ASCII; 'reset'`, 30000);
 
   // 第 2 步：分块以 base64 追加（ASCII、无换行）
   for (const part of parts) {
@@ -198,11 +209,11 @@ async function cmdRelaunch({ profile, url, withExtension = true, port = PORT }) 
   ].filter(x => x !== null).join('\r\n');
 
   const b64Lines = batch.split('\r\n').map(l => Buffer.from(l, 'utf8').toString('base64'));
-  const winBat = `C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass\\launch-${short}.bat`;
+  const winBat = `${WORK}\\launch-${short}.bat`;
 
   // 先把 batch 逐行以 base64 落盘到 lines.b64（ASCII-only，绕开所有引号/编码问题）
-  const b64File = `C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass\\lines-${short}.b64`;
-  ps(`New-Item -ItemType Directory -Force -Path 'C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass' | Out-Null; Set-Content -LiteralPath '${b64File}' -Value '' -Encoding ASCII; 'reset'`, 30000);
+  const b64File = `${WORK}\\lines-${short}.b64`;
+  ps(`New-Item -ItemType Directory -Force -Path '${WORK}' | Out-Null; Set-Content -LiteralPath '${b64File}' -Value '' -Encoding ASCII; 'reset'`, 30000);
   for (const line of b64Lines) {
     ps(`Add-Content -LiteralPath '${b64File}' -Value '${line}' -Encoding ASCII`, 30000);
   }
@@ -210,7 +221,7 @@ async function cmdRelaunch({ profile, url, withExtension = true, port = PORT }) 
   console.log('b64 lines written: ' + lineCount + '/' + b64Lines.length);
 
   const code = `
-$root = 'C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass'
+$root = '${WORK}'
 $prof = '${PROFILE_ROOT}\\${profile}'
 Write-Output ('profile exists: ' + (Test-Path $prof))
 $killed = 0
@@ -385,10 +396,10 @@ async function cmdShow({ profile, port = PORT, url, start = true }) {
   if (!profile) throw new Error('需要 --profile <uid|test-profile>');
   const isTest = profile === 'test-profile';
   const profDir = isTest
-    ? 'C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass\\test-profile'
+    ? `${WORK}\\test-profile`
     : `${PROFILE_ROOT}\\${profile}`;
   const tag = isTest ? 'test' : String(profile).slice(0, 8);
-  const winDir = 'C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass';
+  const winDir = WORK;
 
   // 批处理内容全部由 Node 生成（CRLF 绝不会丢）
   const cli = [

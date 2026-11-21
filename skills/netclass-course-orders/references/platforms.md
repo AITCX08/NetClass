@@ -6,26 +6,29 @@
 
 | 项 | 值 |
 |---|---|
-| 笔记本 | `WJX@192.168.1.8`（SSH 密钥 `C:/Users/Administrator/.ssh/taskmesh_windows_laptop_ed25519`，`HostKeyAlias=192.168.1.10`） |
-| 浏览器 | OCS Desktop 内置 Chrome 137（`--no-sandbox` 必需；计划任务 `/IT` 才在登录会话出窗口） |
+| 笔记本 | **`config/local.json` 的 `ssh.target`**（不要写死在文档里：2026-11-21 从 `192.168.1.8` 换到 `192.168.100.133`，同一局域网）。密钥 `C:/Users/Administrator/.ssh/taskmesh_windows_laptop_ed25519`，`HostKeyAlias=192.168.1.10`（按这个别名 pin，换 IP 不用重新 accept） |
+| 浏览器 | OCS Desktop 内置 Chrome 137（`--no-sandbox` 必需；计划任务 `/IT` 才在登录会话出窗口）；Chrome for Testing 137 固定在 `C:\Users\WJX\AppData\Local\NetClass\browser\137.0.7151.55\chrome-win64\chrome.exe` |
 | 本机脚本服务 | 笔记本 `http://127.0.0.1:17800`（计划任务 `NetClassServer`）：`/netclass.user.js`、`/App.js`、`/ping`、`/status` |
-| 本机隧道 | 控制端 `127.0.0.1:<端口>` ← `ssh -L`（`scripts/tunnel.ps1 -Port <端口>`） |
-| 部署目录（笔记本） | 扩展 `%APPDATA%\OCS Desktop\downloads\extensions\netclass-loader\`；脚本 `%LOCALAPPDATA%\TaskMesh\netclass\` |
+| 本机隧道 | 控制端 `127.0.0.1:<端口>` ← `ssh -L`（`pwsh -File scripts/tunnel.ps1 -Port <端口>`） |
+| 部署目录（笔记本） | 脚本/部署产物 **`E:\Desktop\NetClass\app`**（2026-11-21 从 `%LOCALAPPDATA%\TaskMesh\netclass` 迁入，`server.ps1 -Root` 指这里）；扩展 `%APPDATA%\OCS Desktop\downloads\extensions\netclass-loader\` |
+| 每单做单记录 | 笔记本 **`E:\Desktop\NetClass\orders\<yyyy-MM-dd>-<单位简称>\`**（`README.md` + `artifacts\` + `evidence\`，规范见 `orders\README.md`） |
+| 远程执行器 | `scripts/ssh-exec.ps1 -File <ps1> -Arg '<ps 语句>'`：scp + `-File` 执行，UTF-8 BOM 落盘（PS 5.1 才能读中文），参数注入在 `param()` 之后（避开 `$Profile` 等自动变量） |
+| Session 1 截图 | `scripts/remote/capture-screen.ps1`：SSH 在 Session 0 看不到/截不到用户桌面，脚本自查会话后经 Interactive 计划任务自转 Session 1 |
 
 ## 平台对照
 
-| | shengsheng | qiyang | webtrn | **huayi** |
-|---|---|---|---|---|
-| 域名 | `edu.shengshengketang.com` | `study.bjqiyang.com` | `tea.webtrn.cn` | **`jcpxkh.91huayi.com`** |
-| 调试端口 | **9224** | **9225** | **9226** | **9231 / 9250**（多实例） |
-| profile 目录 | `b33d3127b601404c8d0f694bb02939fa` | `3a6e9e389f794785bb5048d4bf39a36c` | `7c4f1a92d3b64e0f8a5c2d6e9b1f4a37` | 每实例独立 |
-| 计划任务 | `NetClassVis-shengsheng` | `NetClassVis-qiyang` | `NetClassVis-webtrn` | `NetClassVis-huayi` / `-huayi2` |
-| 内容形态 | 视频课 + 随堂弹题（单选/多选/判断） | 录播 MP4 章节（+36 个直播课，跳过） | 研修活动（发帖/回帖）+ 研修作业（含论文） | **直播回放（长视频）+ 录播 50 学时 + 调研问卷** |
-| 当前自动化 | ✅ 全自动（播放/倍速/弹题/逐级推进） | ✅ 全自动（逐章播放/跳过已完成） | ⚠️ **只读监看**（提交类动作未接，需订单方授权） | ✅ 登录 + 开播 + 1x 保活 + 播完轮转（`huayi-watch.mjs`） |
-| 适配器 | `ADAPTER_SHENGSHENG`（App.js:698 起） | `ADAPTER_QIYANG`（App.js:927 起） | `ADAPTER_WEBTRN`（只读；App.js 内搜 id: 'webtrn'） | 无适配器对象，走 `PLATFORM_RATES.huayi=[1]` + 驱动器脚本 |
-| 倍速 | 站点自带最高 **1.5x**（强设 2x/2.5x/3x/4x **都会被立即拉回 1.5x**；想更快只能多标签并行） | **2x**（播放器档位表含 2x） | — | **严格 1x**（连 1.25x 都杀播放器，见下） |
-| 多路并行 | ✅ 同账号多标签各自推进 | — | — | ❌ **单账号单路**（第二个播放页被掐）；多账号 + 多端口才行 |
-| 扩展开发者模式 | 已开 | 已开 | ❌ **未开** → 先 `node scripts\ensure-devmode.mjs --port 9226` | 不需要（走 CDP 注入 + `inject-guard`） |
+| | shengsheng | qiyang | webtrn | **huayi** | **smartedu-cn** |
+|---|---|---|---|---|---|
+| 域名 | `edu.shengshengketang.com` | `study.bjqiyang.com` | `tea.webtrn.cn` | **`jcpxkh.91huayi.com`** | **`basic.smartedu.cn`**（登录走 `auth.smartedu.cn`） |
+| 调试端口 | **9224** | **9225** | **9226** | **9231 / 9250**（多实例） | **9260** |
+| profile 目录 | `b33d3127b601404c8d0f694bb02939fa` | `3a6e9e389f794785bb5048d4bf39a36c` | `7c4f1a92d3b64e0f8a5c2d6e9b1f4a37` | 每实例独立 | `E:\Desktop\NetClass\instances\smartedu` |
+| 计划任务 | `NetClassVis-shengsheng` | `NetClassVis-qiyang` | `NetClassVis-webtrn` | `NetClassVis-huayi` / `-huayi2` | `NCVis-smartedu` |
+| 内容形态 | 视频课 + 随堂弹题（单选/多选/判断） | 录播 MP4 章节（+36 个直播课，跳过） | 研修活动（发帖/回帖）+ 研修作业（含论文） | **直播回放（长视频）+ 录播 50 学时 + 调研问卷** | **教师研修录播课**（1~N 个资源/课），需实名认证 |
+| 当前自动化 | ✅ 全自动（播放/倍速/弹题/逐级推进） | ✅ 全自动（逐章播放/跳过已完成） | ⚠️ **只读监看**（提交类动作未接，需订单方授权） | ✅ 登录 + 开播 + 1x 保活 + 播完轮转（`huayi-watch.mjs`） | ✅ 人工登录接管会话 + 逐资源跳尾 + 卡片截图 |
+| 适配器 | `ADAPTER_SHENGSHENG`（App.js:698 起） | `ADAPTER_QIYANG`（App.js:927 起） | `ADAPTER_WEBTRN`（只读；App.js 内搜 id: 'webtrn'） | 无适配器对象，走 `PLATFORM_RATES.huayi=[1]` + 驱动器脚本 | 无适配器对象，走 `scripts/smartedu-*.mjs` 驱动器 |
+| 倍速 | 站点自带最高 **1.5x**（强设 2x/2.5x/3x/4x **都会被立即拉回 1.5x**；想更快只能多标签并行） | **2x**（播放器档位表含 2x） | — | **严格 1x**（连 1.25x 都杀播放器，见下） | **不必倍速**：记账按播放位置，跳尾即可 |
+| 多路并行 | ✅ 同账号多标签各自推进 | — | — | ❌ **单账号单路**（第二个播放页被掐）；多账号 + 多端口才行 | ❌ **必须串行**（记账按播放器当前持有的课） |
+| 扩展开发者模式 | 已开 | 已开 | ❌ **未开** → 先 `node scripts\ensure-devmode.mjs --port 9226` | 不需要（走 CDP 注入 + `inject-guard`） | 不需要（纯 CDP 驱动） |
 
 
 ## shengsheng 站点事实
@@ -632,6 +635,152 @@ x.drawImage(img, 0, 0, c.width * 6, c.height * 6);
 | `scripts/huayi-dual-test.mjs` | 双账号并行采样（`eff` / `dlg` / `err` / `panel`） | 华医网 |
 | `scripts/huayi-watch.mjs --ports 9231,9250 --every 30` | 1x 保活 + 反作弊重载 + 播完自动轮转 | 华医网 |
 | `scripts/inject-guard.mjs --port <p> --every 3` | 新 target 补注入（带 mtime 热重载） | **通用** |
+
+---
+
+## 国家中小学智慧教育平台（`basic.smartedu.cn`）站点事实（2026-11-22 实测）
+
+> ⚠️ 别和 `smartedu`（青海租户 `basic.qh.smartedu.cn`）搞混。同品牌不同实现：
+> 青海是 `addStudyDuration` 累计秒数、服务端异步分账、滞后 5-8 分钟；
+> **国家级是 `study_details` 按播放位置直接上报、即时生效。** 两者约束不能互相套用。
+
+### 域名分工
+
+| 域名 | 作用 |
+|---|---|
+| `basic.smartedu.cn` | 主站（课程、教师研修、我的学习） |
+| `auth.smartedu.cn/uias/login` | 登录页「智教中国通行证」 |
+| `x-api.ykt.eduyun.cn/proxy/...` | 业务网关（record_configs 等） |
+| `x-study-record-api.ykt.eduyun.cn` | **学分上报**（study_details / resource_learning_positions） |
+| `data-collect-service.ykt.eduyun.cn` | 埋点（神策），与学分无关，看网络时会刷屏 |
+| `sso.basic.smartedu.cn` | SSO 附属主机（有 HWWAFSESID 等 WAF cookie） |
+
+### 运行参数
+
+| 项 | 值 |
+|---|---|
+| 端口 | `9260` |
+| profile | `E:\Desktop\NetClass\instances\smartedu` |
+| 启动 | `scripts/ssh-exec.ps1 -File scripts/remote/launch-visible-chrome.ps1 -Arg '$Port = 9260; $TaskName = "NCVis-smartedu"'` |
+| 隧道 | `pwsh -NoProfile -File scripts\tunnel.ps1 -Port 9260` |
+| 播放器 | video.js + MSE blob（`currentSrc` 是 `blob:`），`seekable` 覆盖全片 |
+
+### ★★ 记账模型：按「播放位置」，不是「累计时长」
+
+```
+POST https://x-study-record-api.ykt.eduyun.cn/v1/study_details
+{ user_id, resource_id, resource_name, resource_type:"t_course",
+  catalog_type:"teacherTraining", topic_type:<channelId>, progress, status, ext_info }
+
+PUT  https://x-study-record-api.ykt.eduyun.cn/v1/resource_learning_positions/<resUuid>/<userId>
+{ "position": <秒> }        ← 只影响续播，与学分无关
+```
+
+| 字段 | 语义 |
+|---|---|
+| `progress` | 0-100，**按资源时长加权**累加 |
+| `status` | `0` 未开始 / `1` 部分完成 / `2` 完成 |
+
+**做法：把 `currentTime` 设到 `duration - 12`，让它自然播完最后 12 秒。**
+实测（3 资源课，1067 + 718 + 885 = 2670 秒）：`40/1` → `67/1` → `100/2`，整门课约 50 秒。
+单资源课：`0/0` → `100/2`。
+
+> 权重就是资源时长占比：1067/2670 = 40.0%，再加 718/2670 = 66.9%≈67%，最后 100%。
+> **所有资源都要做，少一个就卡在中间值。**
+
+> ⚠️ 与华医网**完全相反**：华医网跳到结尾一分不记，因为它的记账 tick 只在
+> `(played + 窗口) >= total` 时触发。**同一个动作在两个平台上结果相反 —— 新平台一律先量再写。**
+
+### ★★ 完成判据：`courseIndex` 徽章
+
+课程页右侧圆形徽章，DOM 是
+`div[class*=course-progress] > div[class*=progress-info]`，文本形如 `"100%已学习"`。
+
+- 三个层级**都有子元素**，所以「取叶子节点」找不到它；正确做法是取**面积最小的匹配元素**。
+- 徽章 `progress≈40%` 时就会显示「已学习」三个字，**只有到 100% 才满足「100%已学习」**。
+  判完成必须看百分比，不能只看「已学习」。
+
+### ★ 入口按钮三态 + SPA 竞态
+
+| 文案 | 含义 | 处理 |
+|---|---|---|
+| `开始学习` | 未开始 | 点它进播放器 |
+| `继续学习` | 有进度 | 点它进播放器 |
+| `复习回顾` | **已 100%** | 直接判完成，不要继续找视频 |
+
+`courseIndex` 的 SPA 是**先渲染分类骨架、入口按钮晚一拍**。单次查询会在按钮出现前
+就判定「无视频」并失败。入口必须轮询（约 16 × 1.2s），出现就点，点完再校验 `video.duration > 0`。
+
+### ★ 拿课程 URL：卡片没有 href
+
+分类页 / 子栏目页的课程卡片是 **`<a>` 但没有 `href`**，靠 JS 点击跳转。
+`a[href*="courseIndex"]` 抓到 0 条。要 URL 只能：
+1. 真鼠标点卡片（`scripts/cdp-cli.mjs <port> click "<课程名>"`）再读 `location.href`；或
+2. 从课程详情页的面包屑反推。
+
+### ★ 列表是二级目录
+
+`教师研修 → 栏目（师德师风 / 通识研修 / 学科研修 / 幼教研修 / 特教研修 / 国培示范 / 院士讲堂 / 名师名校长 / 在线教研）→ 子栏目（如 游戏案例、《指南》解读）→ 课程卡片`。
+
+直接拿一个「分类选课」URL 打开，往往只看到子栏目清单，要**连点两级**才出课程卡片。
+
+### ★ CORS：接口只能由页面自己调
+
+`x-study-record-api` 的 **GET 被 CORS 挡**（页面内 `fetch` 报 `TypeError: Failed to fetch`），
+但页面自己的 POST 正常。**结论：不要试图直接查接口核对进度，只读界面徽章。**
+
+### 登录：UC SSO 三件套（人工登录 + 接管会话）
+
+标准姿势：前台可见浏览器打开 → **客户手动输入账号密码** → 抓会话 → 之后全程自动化。
+
+| 位置 | 名字 | 说明 |
+|---|---|---|
+| cookie | `UC_TOKEN-<appid>-ncet-xedu` | JWT，约 1.1 KB，7 天 |
+| cookie | `UC_SSO_TGC-<appid>-product` | SSO ticket grant，httpOnly |
+| localStorage | `ND_UC_AUTH-<appid>&ncet-xedu&token` | JSON 字符串，里面是 `access_token` |
+| localStorage | `X-EDU-WEB-USER` | `{real_name, user_id, avatar}` |
+| localStorage | `X-EDU-WEB-ROLE` | `{"<userId>":"TEACHER","allRoles":[...]}` |
+| localStorage | `new_area_site_code_user_<userId>_<ROLE>` | 地区码，如 `gd` |
+
+抓取：`node scripts/smartedu-session.mjs 9260` → `evidence/session.json`。
+**三者缺一不可复用**，只存 cookie 或只存 access_token 都不够。
+
+登录页字段：`#username`（通行证ID/手机号/学生号）、`#tmpPassword`（密码）、
+`#agreementCheckbox`（用户协议，**默认未勾选，不勾选点登录会失败**）、
+`input[name=captchaCode]`（未交互时 `display:none`，需要时才出现）。
+
+平台侧还需**实名认证**才计学时。
+
+### 安全操作
+
+| 动作 | 安全吗 |
+|---|---|
+| `Page.navigate` 到任意课程页 | ✅ 安全（不像华医网会丢鉴权），进度在服务端，刷新/重进不丢 |
+| 同账号开两个播放器 | ❌ 会互相覆盖 `study_details`，必须串行 |
+| 跳尾（`currentTime = dur - 12`） | ✅ 有效，这就是正解 |
+
+### 平台专属 / 通用脚本
+
+| 脚本 | 作用 | 归属 |
+|---|---|---|
+| `scripts/cdp-cli.mjs <port> eval\|nav\|click\|type\|shot\|cookies\|storage\|net` | 通用 CDP 驱动 | **通用** |
+| `scripts/smartedu-session.mjs <port>` | 抓 UC SSO 三件套 + 身份，落 `evidence/session.json` | smartedu |
+| `scripts/smartedu-course.mjs <port> <courseUrl> [--offset 12] [--shot-dir d]` | 跑完单门课的全部资源（含入口三态、跳尾、进度核对） | smartedu |
+| `scripts/smartedu-batch.mjs <port> --set core\|hot\|key\|--list f.json [--only 1,3-7]` | 串行跑一批，逐门复核登录态 | smartedu |
+| `scripts/smartedu-cards.mjs <port> --list f.json --out d [--scale 2]` | 出交付截图：面包屑 + 课程卡片 + 圆形徽章 | smartedu |
+| `scripts/smartedu-list.mjs <port> "<listUrl>"` | 抓分类页课程卡片（无限滚动） | smartedu |
+| `scripts/smartedu-parse-courses.mjs <附件3.html> -o courses.json` | 从「区域定制课程」静态导航页 HTML 抽课程清单 | smartedu |
+| `scripts/remote/launch-visible-chrome.ps1` | 前台可见 Chrome（Interactive 计划任务，Session 1，断言非 topmost） | **通用** |
+| `scripts/remote/capture-screen.ps1` | Session 1 真实桌面截图 + 窗口清单 | **通用** |
+| `scripts/ssh-exec.ps1 -File <ps1> -Arg '<语句>'` | 远程执行（scp + `-File`，UTF-8 BOM，参数注入在 `param()` 后） | **通用** |
+
+### 交付截图构图
+
+附件类文档通常要求「每类一张，含 `100% 已学习`」。示例图尺寸约 1267×319，构图是
+**面包屑 + 课程卡片（封面/标题/课程来源/资源数）+ 右侧圆形 `100%已学习` 徽章 + 复习回顾按钮**。
+
+`smartedu-cards.mjs` 已经按这个构图裁：找徽章（面积最小的匹配元素）→ 上溯到卡片容器 →
+上方补面包屑 → 2x 缩放（输出约 1416×337）。
 
 ---
 

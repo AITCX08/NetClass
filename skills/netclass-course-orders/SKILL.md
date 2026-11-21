@@ -7,7 +7,7 @@ description: "Use when doing the hands-on platform work on the lab Windows lapto
 
 ## 定位（先读这一段）
 
-订单方给 **平台网址 + 账号密码（+ 任务要求）**，你把活在**实验室的 Windows 笔记本**（`WJX@192.168.1.8`）上干完。
+订单方给 **平台网址 + 账号密码（+ 任务要求）**，你把活在**实验室的 Windows 笔记本**（`config/local.json` 的 `ssh.target`，2026-11-21 起是 `WJX@192.168.100.133`）上干完。
 执行栈**已经存在**，你的工作是**接线与扩展**，不是搭新框架。
 
 **核心原则：复用 netclass，不另起炉灶。**
@@ -18,7 +18,7 @@ description: "Use when doing the hands-on platform work on the lab Windows lapto
 | 注入范围（新平台域名） | `loader-ext/background.js` 的 `MATCHES` + `loader-ext/manifest.json` 的 `host_permissions` |
 | 运维/侦察工具 | `scripts/`（已有 110 个，先查再写） |
 | 笔记本侧一次性脚本 | `runs/remote/*.ps1`（**纯 ASCII**） |
-| 订单交付物 | `runs/orders/<平台>-<YYYYMMDD>/`（不入库） |
+| 订单交付物 | 笔记本 `E:\Desktop\NetClass\orders\<yyyy-MM-dd>-<单位简称>\`（`README.md` + `artifacts\` + `evidence\`，规范见 `orders\README.md`；不入库） |
 
 仓库：`D:\Vibe\_opensource\artifacts\TaskMesh\netclass-20261013`（分支 `main`）
 **先读 `docs/HANDOVER.md`**（21+ 个坑的病历本），再动手。
@@ -88,6 +88,20 @@ node scripts\parallel-probe.mjs --port 9224 --open "<课程URL>" --max 3   # 需
 
 已知平台直接进第 3 步；**未知平台**先看 `references/new-platform-adapter.md`，按那里的八步走（第 0 步是先查平台表，别急着适配）。
 平台事实（端口、profile、计划任务、站点结构、选择器）见 `references/platforms.md`。
+
+**已登记平台**（hostname 一眼认）：
+
+| host | 平台 | 记账模型 | 备注 |
+|---|---|---|---|
+| `edu.shengshengketang.com` | 声声课堂 | 视频进度 | 全自动，倍速上限 1.5x |
+| `study.bjqiyang.com` | 齐阳 | 视频进度 | 全自动，2x |
+| `tea.webtrn.cn` | 教师培训 | 活动/作业 | 写路径已接，提交类需授权 |
+| `jcpxkh.91huayi.com` | 华医网 | 播放完成 + 问卷 | **严格 1x、单账号单路**，见 `platforms.md#华医网` |
+| `basic.smartedu.cn` | 国家中小学智慧教育平台 | **按播放位置**（跳尾有效） | 人工登录 + 接管会话；见 `platforms.md#国家中小学智慧教育平台` |
+| `basic.qh.smartedu.cn` | 青海智慧教育（同品牌不同实现！） | **累计秒数 + 服务端异步分账**（滞后 5-8 分钟） | 与国家级约束**不能互相套用** |
+
+> ⚠️ 同品牌不等于同实现：`basic.smartedu.cn`（国家级）和 `basic.qh.smartedu.cn`（青海）
+> 是两套记账模型，跳尾在国家级有效、在青海无效。**新租户一律先量再写。**
 
 ### 第 2 步 · 登录（新平台或会话过期时）
 
@@ -185,7 +199,9 @@ node scripts\tile-verify.mjs               # 窗口 + 页面 + 弹题计数
 
 ## 参考文件
 
-- `references/platforms.md` — 平台登记表（端口/profile/计划任务/站点结构/选择器/接口、learnspace 作业流程、抓课程事实）
+- `references/platforms.md` — 平台登记表（端口/profile/计划任务/站点结构/选择器/接口、learnspace 作业流程、抓课程事实）；
+  含**国家中小学智慧教育平台**（`basic.smartedu.cn`）完整站点事实：UC SSO 三件套、`study_details` 记账口径与加权公式、
+  `courseIndex` 徽章判据、入口三态与 SPA 竞态、课程卡片无 href、CORS 限制、交付截图构图
 - `references/new-platform-adapter.md` — 新平台接入八步 + **截图驱动铁律** + **三项硬约束探测法**（倍速/并行/鉴权）+ 验证码通用打法 + 症状→根因诊断清单 + 适配器代码骨架
 - `references/ip-pool.md` — **出口 IP 方案**（多账号防关联）：拨号 VPS / 住宅 / 移动 / 免费池的成本对比、
   Chrome `--proxy-server` 单实例接法、出口校验与风控纪律

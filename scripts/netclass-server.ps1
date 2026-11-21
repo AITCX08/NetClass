@@ -5,16 +5,38 @@
     2) /App.js            → 实现模块（已装脚本运行时可热加载最新版，不必等下次安装）
     3) /ingest            → 接收脚本回传的探测/结果数据
     4) /ping, /status     → 健康检查
-  目录约定（部署到笔记本）：C:\Users\YOURNAME\AppData\Local\TaskMesh\netclass\
+  目录约定（部署到笔记本）：E:\Desktop\NetClass\app\
       server.ps1 / App.js / netclass.user.js / logs\
   仅监听 127.0.0.1:17800，不对外网开放。
 #>
 param(
   [int]$Port = 17800,
-  [string]$Root = "$env:LOCALAPPDATA\TaskMesh\netclass"
+  [string]$Root = ''
 )
 
 $ErrorActionPreference = 'Stop'
+
+# ★ 2026-11-22 修：默认 $Root 以前写死 %LOCALAPPDATA%\TaskMesh\netclass —— 那是**迁移前**的旧目录。
+#   计划任务 NetClassServer 传了 -Root 所以线上没事，但手动按文档直接跑本脚本会从旧目录供 JS
+#   （旧目录里 156KB 的旧 App.js 还在），表现为"改了代码不生效"。
+#   现在按优先级解析：$Root 参数 > E:\Desktop\NetClass\config\netclass-local.json 的 appRoot
+#   > E:\Desktop\NetClass\app > 旧路径（仅兜底，并打警告）。
+if (-not $Root) {
+  $workRoot = 'E:\Desktop\NetClass'
+  $mirrorJson = Join-Path $workRoot 'config\netclass-local.json'
+  if (Test-Path $mirrorJson) {
+    try {
+      $mirror = Get-Content $mirrorJson -Raw | ConvertFrom-Json
+      if ($mirror.appRoot) { $Root = $mirror.appRoot }
+    } catch { }
+  }
+  if (-not $Root -and (Test-Path (Join-Path $workRoot 'app'))) { $Root = Join-Path $workRoot 'app' }
+  if (-not $Root) {
+    $Root = "$env:LOCALAPPDATA\TaskMesh\netclass"
+    Write-Warning "未找到 $workRoot\app，退回旧目录 $Root（迁移前位置，可能含过期 App.js）"
+  }
+}
+
 New-Item -ItemType Directory -Force -Path $Root, "$Root\logs" | Out-Null
 
 $appJs = Join-Path $Root 'App.js'

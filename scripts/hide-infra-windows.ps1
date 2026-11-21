@@ -1,4 +1,4 @@
-# hide-infra-windows.ps1 — 隐藏"基础设施进程"的可见控制台窗口
+﻿# hide-infra-windows.ps1 — 隐藏"基础设施进程"的可见控制台窗口
 #
 # 背景：用户在本机打游戏，要求**不要弹窗**。
 # 已知来源：计划任务 `TaskMesh Hub`（动作是 pythonw.exe）拉起的 **node 子进程会自建控制台窗口**，

@@ -28,32 +28,42 @@ const __ROOT = __join(__dn(__fu(import.meta.url)), '..');
 const NC_LOCAL_CFG = (() => {
   try { const p = __join(__ROOT, 'config/local.json'); return __ex(p) ? JSON.parse(__rf(p, 'utf8')) : null; } catch { return null; }
 })();
-const NC_SSH_TARGET = NC_LOCAL_CFG?.ssh?.target || NC_SSH_TARGET;
+// ★ 2026-11-22 修：原来是
+//     const NC_SSH_TARGET = NC_LOCAL_CFG?.ssh?.target || NC_SSH_TARGET;
+//   右侧引用的正是正在声明的自己 —— 配置存在时靠 || 短路侥幸不炸，配置缺失时 TDZ ReferenceError。
+//   改成显式来源链，并且缺配置就明确退出，不再静默降级到占位符路径。
+const NC_SSH_TARGET = NC_LOCAL_CFG?.ssh?.target || process.env.NC_SSH_TARGET || '';
+const NC_SSH_USER = NC_SSH_TARGET.includes('@') ? NC_SSH_TARGET.split('@')[0] : '';
 const NC_SSH_HOST = NC_SSH_TARGET.split('@').pop();
-const NC_SSH_USER = NC_SSH_TARGET.split('@')[0];
-const NC_SSH_KEY = NC_LOCAL_CFG?.ssh?.keyPath || NC_SSH_KEY;
+const NC_SSH_KEY = NC_LOCAL_CFG?.ssh?.keyPath || process.env.NC_SSH_KEY_PATH || '';
 const NC_SSH_ALIAS = NC_LOCAL_CFG?.ssh?.hostKeyAlias || NC_SSH_HOST;
-const NC_SSH_KNOWN = NC_LOCAL_CFG?.ssh?.knownHostsFile || NC_SSH_KNOWN;
+const NC_SSH_KNOWN = NC_LOCAL_CFG?.ssh?.knownHostsFile || '';
+if (!NC_SSH_TARGET || !NC_SSH_KEY || !NC_SSH_KNOWN) {
+  console.error('nc.mjs 缺 SSH 配置：config/local.json 的 ssh.target / ssh.keyPath / ssh.knownHostsFile');
+  process.exit(1);
+}
+// 远端 Windows 用户名从 ssh.target 推导 —— 不再写死 C:\Users\YOURNAME
+const WINUSER = NC_SSH_USER;
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..');
 const RUNS = join(REPO, 'runs');
 const TM_ID = 'dhdgffkkebhmkfjojejmpbldmpobfkfo';
 const LAPTOP = NC_SSH_TARGET;
 const SSH_KEY = NC_SSH_KEY;
-const CHROME = 'C:\\Users\\YOURNAME\\AppData\\Local\\Programs\\OCS Desktop\\resources\\bin\\chrome\\chrome\\chrome.exe';
-const EXT_TM = 'C:/Users/YOURNAME/AppData/Roaming/OCS Desktop/downloads/extensions/tampermonkey';
+const CHROME = `C:\\Users\\${WINUSER}\\AppData\\Local\\Programs\\OCS Desktop\\resources\\bin\\chrome\\chrome\\chrome.exe`;
+const EXT_TM = `C:/Users/${WINUSER}/AppData/Roaming/OCS Desktop/downloads/extensions/tampermonkey`;
 // ★ 新平台（如学习通）要看到 NetClass 面板/模块，必须把加载器也装上；
 //   只加载油猴时 --disable-extensions-except 会把加载器排除掉，页面里就没有 window.NetClass。
-const EXT_NC = 'C:/Users/YOURNAME/AppData/Roaming/OCS Desktop/downloads/extensions/netclass-loader';
-const PREF_ROOT = 'C:\\Users\\YOURNAME\\AppData\\Roaming\\OCS Desktop\\userDataDirs';
-const WORK = 'C:\\Users\\YOURNAME\\AppData\\Local\\TaskMesh\\netclass';
+const EXT_NC = `C:/Users/${WINUSER}/AppData/Roaming/OCS Desktop/downloads/extensions/netclass-loader`;
+const PREF_ROOT = `C:\\Users\\${WINUSER}\\AppData\\Roaming\\OCS Desktop\\userDataDirs`;
+const WORK = `C:\\Users\\${WINUSER}\\AppData\\Local\\TaskMesh\\netclass`;
 
 const SSH = [
   '-T', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'PasswordAuthentication=no',
   '-o', 'PreferredAuthentications=publickey', '-o', 'ConnectTimeout=8', '-o', 'ConnectionAttempts=1',
   '-o', 'StrictHostKeyChecking=accept-new', '-o', 'HostKeyAlgorithms=ssh-ed25519',
   '-o', 'HostKeyAlias=' + NC_SSH_ALIAS,
-  '-o', 'UserKnownHostsFile=C:/Users/YOURNAME/.ssh/known_hosts',
+  '-o', 'UserKnownHostsFile=' + NC_SSH_KNOWN,
   '-i', SSH_KEY, LAPTOP
 ];
 const sleep = ms => new Promise(r => setTimeout(r, ms));

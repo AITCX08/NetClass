@@ -1,4 +1,4 @@
-<#
+﻿<#
   lap.ps1 — 在笔记本上执行一段本地 PowerShell 脚本（分块传输，规避引号/长度/编码问题）
   用法：
     .\lap.ps1 -File .\remote\some.ps1                # 上传并执行

@@ -18,8 +18,11 @@ const MATCHES = [
   'https://tea.webtrn.cn/*',      // 教师培训：研修活动/作业
   'https://*.chaoxing.com/*',     // 学习通（超星）：课程/章节/任务点
   'https://*.ccjyxy.cn/*',      // 新订单：col.ccjyxy.cn
-  'https://*.zhihuishu.com/*'   // 智慧树（知到）：学习页 studyvideoh5.zhihuishu.com/stuStudy,
-  'https://basic.qh.smartedu.cn/*'  // 青海智慧教育平台（2026-10-21 接入）
+  'https://*.zhihuishu.com/*',  // 智慧树（知到）：学习页 studyvideoh5.zhihuishu.com/stuStudy
+  'https://basic.qh.smartedu.cn/*',  // 青海智慧教育平台（2026-10-21 接入）
+  // 华医网（2026-10-23 接入）：www 主站 / jcpxkh 基层培训平台 / hysslogin 登录页 / cme28 继教 /
+  // xkjspc 直播 / xuexi 学习平台。整域通配，省得每加一个子域就回来改一次。
+  'https://*.91huayi.com/*'
 ];
 const CODE_URL = 'http://127.0.0.1:17800/netclass.user.js';
 

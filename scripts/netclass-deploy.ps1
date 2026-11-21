@@ -6,7 +6,7 @@
     .\netclass-deploy.ps1 -Action stop         # 停止模块服务
     .\netclass-deploy.ps1 -Action status       # 查看服务与文件状态
     .\netclass-deploy.ps1 -Action shell        # 打印壳脚本的本地安装地址
-  依赖：C:\\Users\\YOURNAME\\.ssh\\id_ed25519（既有 SSH 身份）
+  依赖：config/local.json 的 ssh.keyPath（既有 SSH 身份）
 #>
 param(
   [Parameter(Mandatory = $true)][ValidateSet('push', 'start', 'stop', 'status', 'shell', 'logs')][string]$Action,
@@ -18,14 +18,24 @@ if (-not $Repo) {
 }
 Write-Host ("repo = " + $Repo)
 
-# ★ 2026-10-20 去个人化：环境值从 config/local.json 读（缺失则用默认占位）
+# ★ 2026-10-20 去个人化：环境值从 config/local.json 读
+# ★ 2026-11-22 修：原来是「缺失则用默认占位」—— 占位值不会报错，只会让 scp 静默失败/连到
+#   user@host，看起来像"部署成功但没生效"。改为**缺配置直接失败**，并打印缺哪个键。
 $LocalCfg = $null
 $LocalPath = Join-Path $Repo 'config/local.json'
 if (Test-Path $LocalPath) { try { $LocalCfg = Get-Content $LocalPath -Raw | ConvertFrom-Json } catch { Write-Warning "config/local.json 解析失败" } }
-$LaptopHost = if ($LocalCfg -and $LocalCfg.ssh.target) { ($LocalCfg.ssh.target -split '@')[-1] } else { 'YOUR_BROWSER_HOST' }
-$LaptopUser = if ($LocalCfg -and $LocalCfg.ssh.target) { ($LocalCfg.ssh.target -split '@')[0] } else { 'YOURNAME' }
-$Key = if ($LocalCfg -and $LocalCfg.ssh.keyPath) { $LocalCfg.ssh.keyPath } else { 'C:/Users/YOURNAME/.ssh/id_ed25519' }
-$KnownHosts = if ($LocalCfg -and $LocalCfg.ssh.knownHostsFile) { $LocalCfg.ssh.knownHostsFile } else { 'C:/Users/YOURNAME/.ssh/known_hosts' }
+$LaptopHost = if ($LocalCfg -and $LocalCfg.ssh.target) { ($LocalCfg.ssh.target -split '@')[-1] } else { '' }
+$LaptopUser = if ($LocalCfg -and $LocalCfg.ssh.target) { ($LocalCfg.ssh.target -split '@')[0] } else { '' }
+$Key = if ($LocalCfg -and $LocalCfg.ssh.keyPath) { $LocalCfg.ssh.keyPath } else { '' }
+$KnownHosts = if ($LocalCfg -and $LocalCfg.ssh.knownHostsFile) { $LocalCfg.ssh.knownHostsFile } else { '' }
+$missing = @()
+if (-not $LaptopHost) { $missing += 'ssh.target' }
+if (-not $Key) { $missing += 'ssh.keyPath' }
+if (-not $KnownHosts) { $missing += 'ssh.knownHostsFile' }
+if ($missing.Count) {
+  throw ("config/local.json 缺 " + ($missing -join ' / ') + " —— 不提供占位兜底，补齐后再部署")
+}
+if (-not (Test-Path $Key)) { throw ("ssh 私钥不存在: " + $Key) }
 $SshOpts = @(
   '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'PasswordAuthentication=no',
   '-o', 'PreferredAuthentications=publickey', '-o', 'ConnectTimeout=8', '-o', 'ConnectionAttempts=1',
@@ -34,8 +44,10 @@ $SshOpts = @(
   '-o', ('UserKnownHostsFile=' + $KnownHosts),
   '-i', $Key
 )
-$RemoteRoot = if ($LocalCfg -and $LocalCfg.browser.remoteRoot) { $LocalCfg.browser.remoteRoot } else { 'C:\Users\YOURNAME\AppData\Local\TaskMesh\netclass' }
-$ExtRoot = if ($LocalCfg -and $LocalCfg.browser.extRoot) { $LocalCfg.browser.extRoot } else { 'C:\Users\YOURNAME\AppData\Roaming\OCS Desktop\downloads\extensions\netclass-loader' }
+$RemoteRoot = if ($LocalCfg -and $LocalCfg.browser.remoteRoot) { $LocalCfg.browser.remoteRoot } else { '' }
+$ExtRoot = if ($LocalCfg -and $LocalCfg.browser.extRoot) { $LocalCfg.browser.extRoot } else { '' }
+if (-not $RemoteRoot) { throw 'config/local.json 缺 browser.remoteRoot（远端部署目录），不提供占位兜底' }
+if (-not $ExtRoot) { throw 'config/local.json 缺 browser.extRoot（远端扩展目录），不提供占位兜底' }
 $Ssh = 'C:\Windows\System32\OpenSSH\ssh.exe'
 $Scp = 'C:\Windows\System32\OpenSSH\scp.exe'
 

@@ -1,7 +1,7 @@
 {
   "_meta": {
     "version": 1,
-    "updatedAt": "2026-10-19T10:18:00+08:00",
+    "updatedAt": "2026-11-21T16:36:59.039Z",
     "doc": "docs/AGENT-ARCHITECTURE.md §2",
     "note": "数据驱动的平台注册表。加平台 = 这里加一个块，不改代码。P0 阶段只做「抽数据」，行为与 scripts/supervisor.mjs 原有硬编码逐字一致（args/日志路径/顺序全部照抄）。",
     "conventions": {
@@ -147,7 +147,40 @@
       "scripts/supervisor.mjs:81-96",
       "docs/HANDOVER.md §5.41/§6",
       "docs/AGENT-ARCHITECTURE.md §2"
-    ]
+    ],
+    "profile": {
+      "accounting": {
+        "model": "watchtime",
+        "settleLagSec": 300,
+        "verified": "2026-10-19",
+        "note": "L2 时长制：设 927s 服务端只收 296→536（§2.2）；课级记账滞后见 §5.56"
+      },
+      "rate": {
+        "declaredMax": 2,
+        "accountingMax": 1.25,
+        "hardKill": false,
+        "rateTable": [
+          1,
+          1.25,
+          1.5,
+          2
+        ]
+      },
+      "detect": {
+        "level": "C2",
+        "probes": [
+          "isTrusted"
+        ],
+        "verified": "2026-10-19",
+        "note": "C2 近似：MUI/React 不吃合成 click（§2.2）"
+      },
+      "access": {
+        "captcha": "none",
+        "sso": "single",
+        "faceOnFinish": false,
+        "verified": "2026-10-19"
+      }
+    }
   },
   "chaoxing": {
     "label": "学习通（超星）",
@@ -258,7 +291,31 @@
       "scripts/lab/cx-login.mjs:29-37",
       "scripts/progress-report.mjs:57-67",
       "scripts/supervisor.mjs:86,95"
-    ]
+    ],
+    "profile": {
+      "accounting": {
+        "model": "settle",
+        "verified": "2026-10-16",
+        "note": "L2/L4 双性：记账按累计时长，完成按任务点 span.roundpoint.blue（§2.2、HANDOVER §5.36）"
+      },
+      "rate": {
+        "declaredMax": 1.5,
+        "accountingMax": 1.5,
+        "hardKill": false
+      },
+      "detect": {
+        "level": "C1",
+        "probes": [],
+        "verified": "2026-10-16",
+        "note": "C1 变体：禁 Emulation.setDeviceMetricsOverride（改指纹触发 detect.chaoxing.com 风控，§2.2）"
+      },
+      "access": {
+        "captcha": "image",
+        "sso": "single",
+        "faceOnFinish": false,
+        "verified": "2026-10-16"
+      }
+    }
   },
   "shengsheng": {
     "label": "生生课堂",
@@ -330,7 +387,30 @@
       "scripts/ss-watch.mjs:18-36",
       "docs/HANDOVER.md §6.1/§5.31/§5.41",
       "scripts/supervisor.mjs:85"
-    ]
+    ],
+    "profile": {
+      "accounting": {
+        "model": "settle",
+        "verified": "2026-10-16",
+        "note": "L4 结算：domAbsent，连续 10 轮无 <video> 判学完（§2.2；ss-watch.mjs:33-36）"
+      },
+      "rate": {
+        "declaredMax": 1.5,
+        "accountingMax": 1.5,
+        "hardKill": false
+      },
+      "detect": {
+        "level": "C0",
+        "probes": [],
+        "verified": "2026-10-16"
+      },
+      "access": {
+        "captcha": "none",
+        "sso": "single",
+        "faceOnFinish": false,
+        "verified": "2026-10-16"
+      }
+    }
   },
   "zhihuishu": {
     "label": "智慧树知到",
@@ -403,7 +483,41 @@
       "docs/FINAL-HANDOVER.md:33,75-80",
       "runs/zhs-run.mjs",
       "runs/zhs-watch.mjs"
-    ]
+    ],
+    "profile": {
+      "accounting": {
+        "model": "position",
+        "verified": "2026-10-15",
+        "note": "L1 位置制+累加：studyTotalTime 330→657；watchState===1 判完成，DOM 的 ✓ 全是装饰（§2.2）"
+      },
+      "rate": {
+        "declaredMax": 1.5,
+        "accountingMax": 1.5,
+        "hardKill": false,
+        "rateTable": [
+          1,
+          1.25,
+          1.5
+        ]
+      },
+      "detect": {
+        "level": "C4",
+        "probes": [
+          "plugin-blacklist",
+          "xhr-open-native",
+          "isTrusted"
+        ],
+        "kickDelaySec": 3,
+        "verified": "2026-10-15",
+        "note": "C4：isNative(XHR.open) + !e.isTrusted + window.OCS 黑名单（App.js:188-276）"
+      },
+      "access": {
+        "captcha": "image",
+        "sso": "single",
+        "faceOnFinish": false,
+        "verified": "2026-10-15"
+      }
+    }
   },
   "qiyang": {
     "label": "齐阳培训",
@@ -434,7 +548,8 @@
       "endpoint": "getUrl + '&current_time=' (finish?goodscourses_id=…)",
       "pattern": "isEnd===1",
       "verified": null,
-      "verifiedNote": "机制见 docs/HANDOVER.md §6.2（站点自己每 300s/拖动>60s/播完上报）；本次未现场复测"
+      "verifiedNote": "机制见 docs/HANDOVER.md §6.2（站点自己每 300s/拖动>60s/播完上报）；本次未现场复测",
+      "_verifiedMissing": "无历史实测日期：该平台的完成判据只在机制层面确认（见 verifiedNote 引用的 HANDOVER 章节），从未现场复测过。按红线「不猜数值」，此处保持 null，需在有会话的实例上实测后补日期。"
     },
     "constraints": {
       "maxParallel": 1,
@@ -469,7 +584,27 @@
       "docs/HANDOVER.md §1.4/§6.2",
       "scripts/status.mjs:23",
       "scripts/lab/qy-watch.mjs"
-    ]
+    ],
+    "profile": {
+      "accounting": {
+        "model": "position",
+        "note": "L1：isEnd / current_time；站点自己每 300s / 拖动>60s / 播完上报（§2.2）"
+      },
+      "rate": {
+        "declaredMax": 2,
+        "accountingMax": 2,
+        "hardKill": false
+      },
+      "detect": {
+        "level": "C0",
+        "probes": []
+      },
+      "access": {
+        "captcha": "none",
+        "sso": "single",
+        "faceOnFinish": false
+      }
+    }
   },
   "webtrn": {
     "label": "教师培训平台（webtrn）",
@@ -503,7 +638,8 @@
       "scope": "coursePage",
       "pattern": "成绩构成：课程学习 40% / 研修作业 40% / 研修活动 20% / 资源共享 20%",
       "verified": null,
-      "verifiedNote": "成绩构成见 docs/HANDOVER.md §6.3；本次未现场复测"
+      "verifiedNote": "成绩构成见 docs/HANDOVER.md §6.3；本次未现场复测",
+      "_verifiedMissing": "无历史实测日期：该平台的完成判据只在机制层面确认（见 verifiedNote 引用的 HANDOVER 章节），从未现场复测过。按红线「不猜数值」，此处保持 null，需在有会话的实例上实测后补日期。"
     },
     "constraints": {
       "maxParallel": 1,
@@ -542,7 +678,22 @@
       "scripts/status.mjs:24",
       "scripts/lab/webtrn-login.mjs",
       "scripts/lab/webtrn-nav.mjs"
-    ]
+    ],
+    "profile": {
+      "accounting": {
+        "model": "settle",
+        "note": "L4：成绩构成 40/40/20/20（§2.2）"
+      },
+      "detect": {
+        "level": "C0",
+        "probes": []
+      },
+      "access": {
+        "captcha": "image",
+        "sso": "single",
+        "faceOnFinish": false
+      }
+    }
   },
   "smartedu": {
     "label": "青海智慧教育",
@@ -603,6 +754,315 @@
     "_evidence": [
       "runs/orders/qh-smartedu/03-验收报告.md",
       "runs/orders/qh-smartedu/03-验收-1.3全部已完成.png"
-    ]
+    ],
+    "profile": {
+      "accounting": {
+        "model": "watchtime",
+        "settleLagSec": 480,
+        "verified": "2026-10-21",
+        "note": "L2 累计秒数 + L4 后端异步分账（§2.2、HANDOVER §5.59/§5.60）；记账接口不带任务 ID"
+      },
+      "rate": {
+        "declaredMax": 2,
+        "accountingMax": 2,
+        "hardKill": false,
+        "rateTable": [
+          1,
+          1.25,
+          1.5,
+          1.75,
+          2
+        ]
+      },
+      "detect": {
+        "level": "C0",
+        "probes": [],
+        "click": "cdp",
+        "verified": "2026-10-21",
+        "note": "Ant Design：element.focus() 完全无效，必须 Input.dispatchMouseEvent（HANDOVER §5.62）"
+      },
+      "access": {
+        "captcha": "none",
+        "sso": "single",
+        "faceOnFinish": false,
+        "verified": "2026-10-21"
+      }
+    }
+  },
+  "smartedu-cn": {
+    "label": "国家中小学智慧教育平台（智慧中小学·国家级）",
+    "host": "basic.smartedu.cn",
+    "homeUrl": "https://basic.smartedu.cn/",
+    "cdp": 9260,
+    "capabilities": [
+      "video"
+    ],
+    "driver": {
+      "script": "scripts/smartedu-course.mjs",
+      "args": [
+        "<port>",
+        "<courseUrl>",
+        "--offset",
+        "12",
+        "--max-wait",
+        "90"
+      ],
+      "note": "单课：scripts/smartedu-course.mjs <port> <courseUrl>；批量：scripts/smartedu-batch.mjs <port> --list <file.json>；抓会话：scripts/smartedu-session.mjs <port>；出交付截图：scripts/smartedu-cards.mjs <port> --list <file.json> --out <dir>；通用 CDP：scripts/cdp-cli.mjs <port> <eval|nav|click|type|shot|cookies|storage|net>。"
+    },
+    "watchers": [],
+    "categories": null,
+    "completion": {
+      "kind": "pageText",
+      "scope": "courseIndex 页右侧圆形徽章",
+      "pattern": "100%\\s*已学习",
+      "api": {
+        "credit": "POST https://x-study-record-api.ykt.eduyun.cn/v1/study_details",
+        "body": "{ user_id, resource_id, resource_name, resource_type:\"t_course\", catalog_type, topic_type, progress, status, ext_info }",
+        "position": "PUT https://x-study-record-api.ykt.eduyun.cn/v1/resource_learning_positions/<resUuid>/<userId>  {\"position\":<秒>}",
+        "fieldMeaning": "progress 0-100 按资源时长加权累加；status 0=未开始 / 1=部分完成 / 2=完成",
+        "positionIsIrrelevant": "position 只管续播，与学分无关"
+      },
+      "acceptSignal": "courseIndex 徽章 `100% 已学习`；按钮随之变成 `复习回顾`",
+      "warning": "徽章在 progress≈40% 时就会显示「已学习」字样，只有到 100% 才满足「100%已学习」的交付口径。判完成必须看百分比，不能只看「已学习」三个字。",
+      "verified": "2026-11-22",
+      "verifiedNote": "3 资源课实测 40/1 → 67/1 → 100/2；单资源课实测 0/0 → 100/2；每门课重新打开 courseIndex 读徽章复核",
+      "note": "徽章文案 `100% 已学习`（DOM: div[class*=course-progress] > div[class*=progress-info]，文本形如 \"100%已学习\"）"
+    },
+    "constraints": {
+      "maxParallel": 1,
+      "creditsPerHour": null,
+      "accountingMaxRate": null,
+      "rateMax": null,
+      "hardConstraints": [
+        "★★ 记账是「播放位置」制，不是「累计时长」制（与国家平台的青海租户 smartedu 正好相反）。把 video.currentTime 设到 duration-12、让它自然播完最后 12 秒，就会上报满分并置 status=2；整门课（含 3 个资源）约 50 秒。跳尾有效，无需真实播完。",
+        "★★ progress 按资源时长加权：单资源课一次报 100；3 资源课（1067+718+885=2670s）依次报 40 → 67 → 100。所有资源都做完课程才到 100%，少一个就卡在中间值。",
+        "★★ 批量必须串行：平台按「播放器当前持有的那门课」记账，同一 profile 起两个播放器会互相覆盖 study_details。",
+        "★ courseIndex 有 SPA 渲染竞态：先出分类骨架、入口按钮晚一拍才出现。单次查询会在按钮出现前就判定「无视频」并失败。入口必须轮询（约 16×1.2s），一出现按钮就点，点完再校验 video.duration>0。",
+        "★ 入口按钮是三态：`开始学习`（未开始）/ `继续学习`（有进度）/ `复习回顾`（已 100%）。只认前两种会把「本来就已完成」的课程误判为失败——识别到 `复习回顾` 应直接判完成，不要继续找视频。",
+        "★ 分类页/子栏目页的课程卡片是【无 href 的 <a>】，靠 JS 点击跳转；`a[href*=courseIndex]` 抓到 0 条。要拿课程 URL 只能真鼠标点卡片再读 location.href，或从课程详情页面包屑反推。",
+        "★ x-study-record-api 的 GET 被 CORS 挡（页面内 fetch 报 TypeError: Failed to fetch），而页面自己的 POST 正常。结论：不要试图直接查接口核对进度，只读界面徽章。",
+        "★ 播放器是 video.js + MSE blob（currentSrc 为 blob:），seekable 覆盖全片，可以任意 seek；换资源时视频元素复用同一个 <video>，不需要重新注入。",
+        "登录是 UC SSO 三件套，三者缺一不可复用：① cookie `UC_TOKEN-<appid>-ncet-xedu`（JWT，约 1.1 KB，7 天）② cookie `UC_SSO_TGC-<appid>-product` ③ localStorage `ND_UC_AUTH-<appid>&ncet-xedu&token` 里的 access_token。身份从 localStorage `X-EDU-WEB-USER` 读（user_id / real_name），角色在 `X-EDU-WEB-ROLE`。",
+        "登录页是「智教中国通行证」（auth.smartedu.cn/uias/login），字段 `#username` / `#tmpPassword`，`agreementCheckbox` 默认未勾选、不勾选点登录会失败；`captchaCode` 未交互时 display:none，需要时才出现。",
+        "需要平台侧实名认证才能计入学时。",
+        "整页 Page.navigate 是安全的（不像华医网会丢鉴权），进度在服务端，刷新/重进不丢。",
+        "截图必须在 Session 1（用户桌面）里做：SSH 起的进程在 Session 0，EnumWindows 看不到也 CopyFromScreen 截不到用户桌面。用 scripts/remote/capture-screen.ps1 自转 Session 1。"
+      ]
+    },
+    "auth": {
+      "loginUrl": "https://auth.smartedu.cn/uias/login",
+      "entryFrom": "https://basic.smartedu.cn/ 右上角「登录」（a.index-module_user-un-login-in-a_*）→ 跳 auth.smartedu.cn",
+      "fields": {
+        "user": "#username",
+        "pass": "#tmpPassword",
+        "agree": "#agreementCheckbox",
+        "captcha": "input[name=captchaCode]",
+        "submit": "button（文字「登 录」）"
+      },
+      "captcha": "none",
+      "captchaKind": "未交互时 display:none；需要时按页面提示人工/OCR 处理",
+      "sessionModel": "uc-sso-cookie + localstorage-token",
+      "note": "本平台订单的标准姿势是【人工登录 + 接管会话】：前台可见浏览器打开 → 客户手动输入账号密码 → node scripts/smartedu-session.mjs <port> 抓 UC_TOKEN/TGC/access_token 落盘 → 之后全程自动化。口令不必也不应写进脚本。",
+      "probe": null
+    },
+    "heal": {
+      "resetOnStall": [
+        "Page.navigate 到同一 courseIndex",
+        "entry-poll 重试"
+      ],
+      "restartDriverOnStall": false,
+      "note": "进度在服务端，重进课程页不会丢；入口按钮竞态靠轮询自愈，不需要重启浏览器。"
+    },
+    "assets": null,
+    "_notAdapted": false,
+    "_adaptedAt": "2026-11-22",
+    "_why": "平台级适配（不含任何课程内容）：登录 UC SSO 三件套、study_details 记账口径与加权公式、courseIndex 徽章判据、入口三态与 SPA 竞态、课程卡片无 href、CORS 限制、Session 1 截图通道。",
+    "docs": {
+      "platformFacts": "skill:netclass-course-orders/references/platforms.md#国家中小学智慧教育平台",
+      "handover": "docs/HANDOVER.md"
+    },
+    "_capabilitiesDropped": [
+      "realname",
+      "screenshot"
+    ],
+    "categoriesNote": {
+      "note": "课程列表普遍是【二级目录】：教师研修 → 栏目（师德师风/通识研修/学科研修/幼教研修/特教/国培示范/院士讲堂/名师名校长…）→ 子栏目（如 游戏案例、《指南》解读）→ 课程卡片。",
+      "drill": "进入教师研修后先点栏目名再点子栏目，两次点击后才出现课程卡片；直接拿一个「分类选课」URL 打开往往只看到子栏目清单。"
+    },
+    "profile": {
+      "accounting": {
+        "model": "position",
+        "seekOk": true,
+        "seekTarget": "duration-15",
+        "naturalPlay": false,
+        "settleLagSec": 0,
+        "verified": "2026-11-22",
+        "note": "L0+L1：study_details 客户端报 progress/status；resource_learning_positions 存绝对 position。跳尾有效（currentTime=duration-12 播完即 status=2）"
+      },
+      "rate": {
+        "declaredMax": 2,
+        "accountingMax": null,
+        "hardKill": false
+      },
+      "detect": {
+        "level": "C0",
+        "probes": [],
+        "click": "cdp",
+        "verified": "2026-11-22",
+        "note": "分类页/子栏目页课程卡片是 <a> 但无 href，靠 JS onClick → 只能 Input.dispatchMouseEvent 点"
+      },
+      "access": {
+        "captcha": "none",
+        "sso": "single",
+        "faceOnFinish": false,
+        "verified": "2026-11-22",
+        "note": "UC SSO：auth.smartedu.cn 登录后回跳 ?ticket=；登录页有 input[name=captchaCode] 但默认 display:none 且未触发"
+      }
+    }
+  },
+  "huayi": {
+    "label": "华医网",
+    "host": "jcpxkh.91huayi.com",
+    "homeUrl": "https://jcpxkh.91huayi.com/exercise/ExerciseHome/ProjectList",
+    "cdp": 9231,
+    "capabilities": [
+      "video",
+      "live_replay"
+    ],
+    "driver": {
+      "script": null,
+      "args": [],
+      "note": "2026-10-23 跑通：直播回放 x1 + 1x 保活 + 播完轮转，用 scripts/huayi-watch.mjs（不进 App.js 适配器）"
+    },
+    "watchers": [
+      {
+        "script": "huayi-watch.mjs",
+        "args": [
+          "--ports",
+          "9231,9250",
+          "--every",
+          "30"
+        ],
+        "legacyCmd": "node scripts/huayi-watch.mjs --ports 9231,9250 --every 30"
+      }
+    ],
+    "categories": null,
+    "completion": {
+      "kind": "videoEnd",
+      "scope": "coursePage",
+      "pattern": "video.currentTime / video.duration >= 0.995",
+      "note": "播放页 CoursePlay?courseware_id=<uuid>；验收以平台 UI 的进度为准，不认脚本日志",
+      "verified": "2026-10-23"
+    },
+    "constraints": {
+      "maxParallel": 1,
+      "creditsPerHour": null,
+      "accountingMaxRate": 1,
+      "rateMax": 1,
+      "hardConstraints": [
+        "★★ 严格 1x（2026-10-23 阶梯实测）：1.00x → eff=1.00；1.25 / 1.5 / 1.75 / 2.0x → eff=0.0 且 video 元素直接消失，播放器换成「播放行为异常，视频已停止播放」。ratechange 被抓 → #jj_Iframe / #pf_Iframe / .threeIframe 三个 0x0 隐藏 iframe 上报 → 播放器自杀。重载可完全恢复且进度不丢。",
+        "★★ 单账号单路（2026-10-23 实测）：同账号第二个播放页 → 「您有其他课程正在播放，当前课程已暂停播放！」并把该页 video 销毁。要并行必须多账号 + 多 profile + 多端口（本次 9231 白云晴 + 9250 陈金泽，75s 采样两路 eff 均 1.00，无互踢）。",
+        "★★ 整页导航会丢鉴权（jcpxkh 双层 SSO）：Page.navigate 到 LiveStreaming / 同标签导航到 CoursePlay / 从 ProjectList 直接 json/new 到 CoursePlay —— 全部被踢回 VerifySSOCode。唯一能过的顺序：ProjectList 点「进入」→ ExerciseHome/index → PUT /json/new?<CoursePlay>。",
+        "★★ 站点先校验账号密码，失败也回「验证码错误！」（state:2）。判别法：拿另一个已知能登的账号跑同一脚本；一次过说明脚本对，问题在被怀疑的账号。",
+        "登录页两套模式的验证码框 placeholder 都是「请输入验证码」，必须按 id 定位：密码登录 #userCode / #user_yzm（LoadCode → /code/ImageSecond）；短信登录 #mobileCode / #moblie_yzm（LoadMobileCode → /code/IdentifyingCode）。",
+        "验证码图 #user_yzm 在未切 tab 时位于 display:none 的 DIV.card_box 里，此时换 src 浏览器可能不发请求。必须先切「密码登录」等容器可见，再刷新图。",
+        "刷新验证码必须用真鼠标点图（onclick=\"LoadCode();\"）并断言 src 前后不同；直接调 LoadCode() 函数有时不发请求。",
+        "读验证码用 canvas 按 naturalWidth×naturalHeight（100×100）导原始像素 + 整数倍最近邻放大；Page.captureScreenshot({clip,scale}) 会按显示尺寸 120×48 拉伸，字符糊掉。",
+        "填账号密码用 Input.insertText（配合真鼠标点焦点）；Input.dispatchKeyEvent 的 keyDown 不能同时带 text 和 char，否则每个字符敲两遍（Z8UV → ZZ88UUVV）。",
+        "密码框会被站点自己清空（勾协议 + 等码的几十秒内），提交前必须回读三字段，空了立刻补填。",
+        "登录按钮是 button.login；layui 遮罩 [class*=\"layui-layer-shade\"] 会挡住点击，先 remove。",
+        "点「进入」后弹「我已知悉以上内容」浮层（复选框 + button.s_but「我知道了」，约 (960,600)），不关掉后续点击全被遮；关完还要重新点一次「直播间」，否则 AJAX 列表不加载。",
+        "浏览器必须是 Chrome for Testing 137.0.7151.55（H.264/AAC）；机器自带 Edge 155 不行。",
+        "实例 2 起之前必须确认 9231 在 LISTEN，否则第二个实例会去抢 9231 → WMI 启动失败 251100。",
+        "CDP 注入是 per-target：window.open / LiveOpenVideoPlay 开的新标签拿不到预注入脚本，需 scripts/inject-guard.mjs 长驻补齐（带 mtime 热重载）。",
+        "netclass up --login 每次导航开新标签，会攒到 30+ 个；批量关标签后 CDP 可能失联（端口 LISTEN 但连不上），需杀进程重启实例并删 instances/huayi--*.json。",
+        "xuexi.91huayi.com 用的是手机号 + 图形码 + 短信码，且登录后强制「绑定手机号」，与本订单账号不匹配 —— 不要走那条路。",
+        "华医网有 34 个子域：cme7/cme28(继续教育) xuexi(学习) hytk(题库) dqkh(医师定考) api 等；本订单只用 jcpxkh。"
+      ]
+    },
+    "auth": {
+      "loginUrl": "https://jcpxkh.91huayi.com/exercise/ExerciseLogin/VerifySSOCode?source=0&classify_id=",
+      "fields": {
+        "user": "#user_name",
+        "pass": "#password",
+        "captcha": "#userCode",
+        "captchaImg": "#user_yzm",
+        "submit": "button.login"
+      },
+      "captcha": "image",
+      "captchaKind": "4位字母数字，大小写敏感，100x100 PNG（/code/ImageSecond）",
+      "sessionModel": "cookie + serverTicket",
+      "note": "主站登录后仍需 /exercise/ExerciseLogin/VerifySSOCode 二次 SSO；重启浏览器等于重新登一次（每次 2 个验证码）",
+      "probe": null
+    },
+    "heal": {
+      "resetOnStall": [
+        "Page.reload"
+      ],
+      "restartDriverOnStall": false,
+      "note": "出现「播放行为异常」时重载即可恢复且进度不丢（服务端记着）"
+    },
+    "assets": {
+      "replays": [
+        {
+          "date": "10月10日",
+          "courseware_id": "b65f246f-25df-44a7-84a1-bf791c520469",
+          "duration": 20664
+        },
+        {
+          "date": "10月11日",
+          "courseware_id": "825ac6fd-1c77-449b-9abd-081c0d1e2e67",
+          "duration": 21202
+        }
+      ],
+      "note": "结业还需：录播课 50 学时 + 项目调研问卷（截止 11-30）"
+    },
+    "_notAdapted": false,
+    "_adaptedAt": "2026-10-23",
+    "_why": "2026年第五届全国基层卫生人员能力提升培训项目，直播回放两个账号（白云晴 a27874396 / 陈金泽 220322200305066839）",
+    "docs": {
+      "platformFacts": "skill:netclass-course-orders/references/platforms.md#华医网",
+      "handover": "docs/HANDOVER.md §5.69–5.82、§6.4"
+    },
+    "profile": {
+      "accounting": {
+        "model": "tick",
+        "seekOk": true,
+        "seekTarget": "duration-90",
+        "naturalPlay": true,
+        "settleLagSec": 0,
+        "verified": "2026-10-23",
+        "note": "L3：(playTime+10) >= playTotalTime 的那个 tick 才 SaveLearningTime，且 endFace!=1（HANDOVER §5.84）"
+      },
+      "rate": {
+        "declaredMax": 1,
+        "accountingMax": 1,
+        "hardKill": true,
+        "rateTable": [
+          1
+        ]
+      },
+      "detect": {
+        "level": "C3",
+        "probes": [],
+        "inject": "cdp-only",
+        "click": "cdp",
+        "verified": "2026-10-23",
+        "note": "C3：ratechange → 三个 0x0 隐藏 iframe（#jj_Iframe/#pf_Iframe/.threeIframe）上报 → 播放器自杀（§2.2、§5.78）。inject 显式写 cdp-only：§5.2 的规则表按 C3 会推出 minimal，但同章的输出示例与 P2 验收都要求 cdp-only，两者冲突时取显式声明"
+      },
+      "access": {
+        "captcha": "session-bound",
+        "sso": "double",
+        "faceOnFinish": true,
+        "navOrder": [
+          "ProjectList",
+          "point:进入",
+          "ExerciseHome/index",
+          "new:CoursePlay"
+        ],
+        "verified": "2026-10-23",
+        "note": "A2 会话绑定图形码 + A4 结束人脸 + A5 双层 SSO（整页导航必丢鉴权，HANDOVER §5.74）"
+      }
+    }
   }
 }
